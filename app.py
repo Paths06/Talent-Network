@@ -2289,7 +2289,7 @@ except Exception as recovery_error:
 col1, col2 = st.columns([3, 1])
 with col1:
     st.title("👥 Asian Hedge Fund Talent Network")
-    st.markdown("### Professional intelligence platform for Asia's financial industry")
+    st.markdown("### Professional intelligence platform for financial industry")
 
 with col2:
     # Quick CSV download and emergency controls
@@ -2315,7 +2315,7 @@ with col2:
 
 # --- SIDEBAR: AI Talent Extractor ---
 with st.sidebar:
-    st.title("🤖 AI Talent Extractor")
+    st.title("Data Extractor")
     
     # API Key Setup
     api_key = None
@@ -2332,7 +2332,7 @@ with st.sidebar:
     
     # Enhanced Model Selection with actual 2.0/2.5 models
     st.markdown("---")
-    st.subheader("🤖 Model Selection")
+    st.subheader(" Model Selection")
     
     model_options = {
         "Gemini 1.5 Flash (Recommended)": "gemini-1.5-flash",
@@ -2348,7 +2348,7 @@ with st.sidebar:
     }
     
     selected_model_name = st.selectbox(
-        "Choose AI model:",
+        "Choose  model:",
         options=list(model_options.keys()),
         index=0,
         help="Different models have different capabilities and rate limits"
