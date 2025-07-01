@@ -2322,7 +2322,7 @@ with st.sidebar:
     try:
         api_key = st.secrets.get("GEMINI_API_KEY")
         if api_key:
-            st.success("✅ API key loaded from secrets")
+            st.success("✅")
     except:
         pass
     
