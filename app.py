@@ -123,6 +123,7 @@ def repair_json_response(json_text):
         except:
             pass
         json_text = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_text)
+        json_text = re.sub(r'[\x00-\x1F\x7F]', '', json_text)
         return json_text
         
     except Exception as e:
