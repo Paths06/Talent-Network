@@ -170,7 +170,7 @@ def save_person(person_data):
         'source_text': safe_get(person_data, 'source_text'),
         'extraction_timestamp': datetime.now().isoformat()
     }
-    logger.info(f"Person '{person_data.get('name')}' saved/updated.")
+    logger.info(f"Person '{person_data.get('name')}' saved/updated in session state.")
     return person_id
 
 def delete_person(person_id):
@@ -201,7 +201,7 @@ def save_firm(firm_data):
         'source_text': safe_get(firm_data, 'source_text'),
         'extraction_timestamp': datetime.now().isoformat()
     }
-    logger.info(f"Firm '{firm_data.get('name')}' saved/updated.")
+    logger.info(f"Firm '{firm_data.get('name')}' saved/updated in session state.")
     return firm_id
 
 def delete_firm(firm_id):
@@ -234,7 +234,7 @@ def save_employment(employment_data):
         'source_text': safe_get(employment_data, 'source_text'),
         'extraction_timestamp': datetime.now().isoformat()
     }
-    logger.info(f"Employment {employment_id} saved/updated.")
+    logger.info(f"Employment {employment_id} saved/updated in session state.")
     return employment_id
 
 def delete_employment(employment_id):
@@ -361,11 +361,8 @@ if GENAI_AVAILABLE:
         st.session_state.gemini_model_name = list(GEMINI_MODELS.keys())[0] # Default to the first model
 
     # --- Constants for Token-Aware Chunking ---
-    # These values are conservative. Refer to Gemini API docs for exact limits and tune.
-    # For gemini-1.5-flash (1M tokens), a chunk size of 900,000 leaves room for prompt/response overhead.
-    # If JSON parsing errors persist, consider reducing MAX_TOKENS_PER_CHUNK further (e.g., to 500000 or 700000)
     MAX_TOKENS_PER_CHUNK = 900000 
-    OVERLAP_TOKENS = 100 # Number of tokens to overlap between chunks to maintain context
+    OVERLAP_TOKENS = 100
 
     def chunk_text_by_tokens(model, text, max_chunk_tokens, overlap_tokens):
         """
@@ -384,84 +381,68 @@ if GENAI_AVAILABLE:
         while current_char_idx < len(text):
             chunk_start_idx = current_char_idx
             
-            # Rough estimate of characters per token (for English, typically 4)
-            # Used to get an initial slice that's likely to be within token limits.
             estimated_chars_for_max_tokens = max_chunk_tokens * 4
             
-            # Take an initial slice from the text
             potential_chunk_content = text[chunk_start_idx : chunk_start_idx + estimated_chars_for_max_tokens]
             
-            # Count actual tokens in this potential chunk
             current_chunk_tokens = model.count_tokens(potential_chunk_content).total_tokens
 
             if current_chunk_tokens <= max_chunk_tokens:
-                # If the current segment fits, and it's the last part of the text, add it
                 chunks.append(potential_chunk_content)
                 break
             else:
-                # The potential chunk is too large. Need to find a split point within the token limit.
-                # Use a binary search to find the largest segment that fits within max_chunk_tokens.
-                
                 low_char_idx = 0
                 high_char_idx = len(potential_chunk_content)
-                best_fitting_end_char_idx = 0 # Stores the end char index that yielded the largest fitting segment
+                best_fitting_end_char_idx = 0 
 
                 while low_char_idx <= high_char_idx:
                     mid_char_idx = (low_char_idx + high_char_idx) // 2
                     test_segment = potential_chunk_content[:mid_char_idx]
                     
-                    if not test_segment: # Avoid tokenizing empty string
+                    if not test_segment:
                         low_char_idx = mid_char_idx + 1
                         continue
 
                     test_tokens = model.count_tokens(test_segment).total_tokens
                     
                     if test_tokens <= max_chunk_tokens:
-                        best_fitting_end_char_idx = mid_char_idx # This segment fits, try a larger one
+                        best_fitting_end_char_idx = mid_char_idx
                         low_char_idx = mid_char_idx + 1
                     else:
-                        high_char_idx = mid_char_idx - 1 # Segment too big, shrink it
+                        high_char_idx = mid_char_idx - 1
 
-                # Now, best_fitting_end_char_idx points to the end of the largest segment that fits tokens
-                # Try to find a natural break near this point to avoid splitting words/sentences unnaturally.
                 effective_split_char_idx_in_potential = best_fitting_end_char_idx
                 
-                # Search backwards from best_fitting_end_char_idx for common natural delimiters
-                search_back_limit = max(0, best_fitting_end_char_idx - 200) # Search up to 200 chars back
+                search_back_limit = max(0, best_fitting_end_char_idx - 200)
                 for i in range(best_fitting_end_char_idx - 1, search_back_limit - 1, -1):
-                    if potential_chunk_content[i:i+2] == "\n\n": # Paragraph break
+                    if potential_chunk_content[i:i+2] == "\n\n":
                         effective_split_char_idx_in_potential = i + 2
                         break
-                    elif potential_chunk_content[i] == ".": # End of sentence
+                    elif potential_chunk_content[i] == ".":
                         effective_split_char_idx_in_potential = i + 1
                         break
-                    elif potential_chunk_content[i] == "\n": # Line break
+                    elif potential_chunk_content[i] == "\n":
                         effective_split_char_idx_in_potential = i + 1
                         break
                 
                 final_chunk_content = potential_chunk_content[:effective_split_char_idx_in_potential]
                 final_chunk_tokens = model.count_tokens(final_chunk_content).total_tokens
 
-                # Double check that the chosen chunk still fits after natural break adjustment
                 if final_chunk_tokens > max_chunk_tokens:
-                    # If natural break made it too big, revert to the strict token-optimized split
                     st.warning(f"Natural split caused chunk to exceed token limit ({final_chunk_tokens} > {max_chunk_tokens}). Reverting to token-optimized split.")
                     final_chunk_content = potential_chunk_content[:best_fitting_end_char_idx]
                     final_chunk_tokens = model.count_tokens(final_chunk_content).total_tokens
                     
-                    if final_chunk_tokens > max_chunk_tokens: # This should ideally not happen at this point
+                    if final_chunk_tokens > max_chunk_tokens:
                         st.error(f"FATAL CHUNKING ERROR: Chunk still too large after all attempts. {final_chunk_tokens} tokens. Trimming strictly.")
-                        # Emergency trim if all else fails (might cut mid-word)
                         final_chunk_content = potential_chunk_content[:int(len(potential_chunk_content) * (max_chunk_tokens / final_chunk_tokens))]
 
 
                 chunks.append(final_chunk_content)
 
-                # Advance index for the next chunk, incorporating overlap
-                # Estimate characters for overlap tokens
                 overlap_chars = overlap_tokens * 4 
                 current_char_idx = chunk_start_idx + effective_split_char_idx_in_potential - overlap_chars
-                current_char_idx = max(0, current_char_idx) # Ensure index is not negative
+                current_char_idx = max(0, current_char_idx)
 
         return chunks
 
@@ -469,33 +450,24 @@ if GENAI_AVAILABLE:
     def extract_info_gemini(document_content):
         if not GENAI_AVAILABLE or not gemini_api_key:
             st.error("Gemini API is not configured. Please enter your API key.")
-            return None
+            return False # Indicate failure
 
-        # Get the currently selected model
         current_model = _create_model(st.session_state.gemini_model_name)
-        
-        # Chunk the document content
         chunks = chunk_text_by_tokens(current_model, document_content, MAX_TOKENS_PER_CHUNK, OVERLAP_TOKENS)
-
-        all_extracted_data = {
-            "people": [],
-            "firms": [],
-            "employments": [],
-            "performance_data": [],
-            "movements": []
-        }
 
         total_chunks = len(chunks)
         st.info(f"Processing {total_chunks} chunks using {st.session_state.gemini_model_name}...")
 
-        max_retries = 3 # Define max retries
+        max_retries = 3 
         
+        # This list will accumulate items that *need review* at the very end
+        temp_pending_review_data_from_extraction = [] 
+
         for i, chunk in enumerate(chunks):
             st.subheader(f"Processing chunk {i+1} of {total_chunks}")
             
-            # --- Throttling Logic BEFORE each API Call (per chunk) ---
             current_rpm_limit = GEMINI_MODELS[st.session_state.gemini_model_name]["rpm_limit"]
-            delay_per_request = (60 / current_rpm_limit) + 0.1 # Add a small buffer
+            delay_per_request = (60 / current_rpm_limit) + 0.1
 
             time_since_last_extraction = (datetime.now() - st.session_state.last_extraction_time).total_seconds()
 
@@ -505,34 +477,33 @@ if GENAI_AVAILABLE:
                 time.sleep(time_to_wait)
                 
             st.session_state.last_extraction_time = datetime.now()
-            # --- End Throttling Logic ---
 
-            # --- Retry mechanism for API calls and JSON parsing ---
+            chunk_extracted_data = None
             for attempt in range(max_retries):
                 try:
                     response = current_model.generate_content(chunk)
                     response_text = response.text.strip()
                     
-                    # Remove leading "```json" and trailing "```" if present
                     if response_text.startswith("```json"):
                         response_text = response_text[len("```json"):].strip()
                     if response_text.endswith("```"):
                         response_text = response_text[:-len("```")].strip()
 
                     chunk_extracted_data = json.loads(response_text)
-
-                    # Combine results from this chunk with overall results
-                    for key in all_extracted_data.keys():
-                        if key in chunk_extracted_data and isinstance(chunk_extracted_data[key], list):
-                            all_extracted_data[key].extend(chunk_extracted_data[key])
                     
-                    st.success(f"Chunk {i+1} extracted successfully!")
+                    # --- Process and Save Data from Current Chunk IMMEDIATELY ---
+                    st.info(f"Processing and saving data from chunk {i+1} to session state...")
+                    # We pass the chunk's content as source_text
+                    # This function will update st.session_state and stage review items
+                    process_and_stage_extracted_data(chunk_extracted_data, document_content, temp_pending_review_data_from_extraction)
+                    save_data() # Save the session state data to disk after each chunk
+                    st.success(f"Chunk {i+1} extracted and saved successfully!")
                     break # Break from retry loop if successful
                 except ValueError as ve:
                     st.error(f"Attempt {attempt + 1}/{max_retries}: Failed to parse JSON from Gemini response for chunk {i+1}: {ve}. Response was: \n```json\n{response_text}\n```")
                     if attempt < max_retries - 1:
                         st.info(f"Retrying chunk {i+1} in 2 seconds...")
-                        time.sleep(2) # Wait before retrying
+                        time.sleep(2)
                     else:
                         st.error(f"Max retries reached for chunk {i+1}. Skipping this chunk.")
                 except Exception as e:
@@ -541,41 +512,48 @@ if GENAI_AVAILABLE:
                         st.error(f"API Error Details: {e._error_response}")
                     if attempt < max_retries - 1:
                         st.info(f"Retrying chunk {i+1} in 2 seconds...")
-                        time.sleep(2) # Wait before retrying
+                        time.sleep(2)
                     else:
                         st.error(f"Max retries reached for chunk {i+1}. Skipping this chunk.")
-            # --- End Retry mechanism ---
-        
-        st.success("All chunks processed. Combining results...")
-        return all_extracted_data
+            
+        st.success("All chunks processed. Data saved incrementally.")
+        # Return the accumulated data for review (if any)
+        return temp_pending_review_data_from_extraction
 
-    def process_extracted_data(extracted_data, source_text):
-        new_extractions = []
-
+    # This function now processes and *stages* data.
+    # It *updates session state* but doesn't call save_data.
+    # It also populates the list of items for review.
+    def process_and_stage_extracted_data(extracted_data, source_text, pending_review_list):
         # Process People
         if 'people' in extracted_data:
             for person in extracted_data['people']:
                 person['source_text'] = source_text
+                # Existing save_person directly updates st.session_state.people
                 new_person_id = save_person(person)
                 person['id'] = new_person_id # Ensure ID is set for employment linking
-                new_extractions.append({'type': 'person', 'data': person})
+
+                # Add to pending review list (using a copy of the saved state)
+                pending_review_list.append({'type': 'person', 'data': st.session_state.people[new_person_id].copy()})
+
 
         # Process Firms
         if 'firms' in extracted_data:
             for firm in extracted_data['firms']:
                 firm['source_text'] = source_text
+                # Existing save_firm directly updates st.session_state.firms
                 new_firm_id = save_firm(firm)
                 firm['id'] = new_firm_id # Ensure ID is set for employment linking
-                new_extractions.append({'type': 'firm', 'data': firm})
+
+                pending_review_list.append({'type': 'firm', 'data': st.session_state.firms[new_firm_id].copy()})
         
         # Process Employments (must come after people and firms for ID linking)
         if 'employments' in extracted_data:
             for emp in extracted_data['employments']:
-                # Link by ID if available, otherwise by name (less reliable)
                 person_id = emp.get('person_id')
                 firm_id = emp.get('firm_id')
 
-                # If IDs are not directly provided by Gemini, try to find them from saved data
+                # If IDs are not directly provided by Gemini, try to find them from saved data (current session state)
+                # NOTE: This lookup now uses the current state *which includes data from previous chunks*
                 if not person_id and emp.get('person_name'):
                     for p_id, p_data in st.session_state.people.items():
                         if p_data['name'].lower() == emp['person_name'].lower():
@@ -591,25 +569,26 @@ if GENAI_AVAILABLE:
                     emp['person_id'] = person_id
                     emp['firm_id'] = firm_id
                     emp['source_text'] = source_text
-                    save_employment(emp)
-                    new_extractions.append({'type': 'employment', 'data': emp})
+                    # Existing save_employment directly updates st.session_state.employments
+                    new_employment_id = save_employment(emp)
+
+                    pending_review_list.append({'type': 'employment', 'data': st.session_state.employments[new_employment_id].copy()})
                 else:
-                    logger.warning(f"Skipping employment due to missing linked person/firm: {emp}")
+                    logger.warning(f"Skipping employment from chunk due to missing linked person/firm: {emp}")
 
         # Process Performance Data (save as generic extractions for now)
+        # These don't go into review for now, directly added to all_extractions
         if 'performance_data' in extracted_data:
             for perf in extracted_data['performance_data']:
                 perf['source_text'] = source_text
-                new_extractions.append({'type': 'performance', 'data': perf})
+                st.session_state.all_extractions.append({'type': 'performance', 'data': perf})
 
         # Process Movements (save as generic extractions for now)
+        # These don't go into review for now, directly added to all_extractions
         if 'movements' in extracted_data:
             for move in extracted_data['movements']:
                 move['source_text'] = source_text
-                new_extractions.append({'type': 'movement', 'data': move})
-        
-        st.session_state.all_extractions.extend(new_extractions)
-        save_data() # Save after processing each extraction
+                st.session_state.all_extractions.append({'type': 'movement', 'data': move})
 
 else:
     st.warning("`google-generativeai` library not found. Please install it (`pip install google-generativeai`) to enable AI extraction features.")
@@ -621,31 +600,29 @@ def start_review_timeout():
 
 def auto_save_pending_reviews():
     saved_count = 0
-    approved_queue = queue.Queue() # Thread-safe queue for approved items
     
-    for review_item in st.session_state.pending_review_data:
+    # Process each item in pending_review_data
+    for review_item in list(st.session_state.pending_review_data): # Iterate over a copy as we modify
         # For simplicity, auto-approving all items on timeout for now
         # In a real app, you'd have logic to decide approval based on criteria
         if review_item['type'] == 'person':
             save_person(review_item['data'])
-            approved_queue.put(('person', review_item['data']))
             saved_count += 1
         elif review_item['type'] == 'firm':
             save_firm(review_item['data'])
-            approved_queue.put(('firm', review_item['data']))
             saved_count += 1
         elif review_item['type'] == 'employment':
             save_employment(review_item['data'])
-            approved_queue.put(('employment', review_item['data']))
             saved_count += 1
+        # Remove the item after processing (or if explicitly rejected)
+        st.session_state.pending_review_data.remove(review_item)
     
-    # Clear pending reviews after auto-saving
-    st.session_state.pending_review_data = []
+    # Clear pending reviews list (redundant if removed individually, but good for safety)
+    st.session_state.pending_review_data = [] 
     st.session_state.show_review_interface = False
     st.session_state.review_start_time = None
     
-    # Save all data to disk after auto-saving
-    save_data()
+    save_data() # Save all data to disk after auto-saving
     return saved_count
 
 def review_interface():
@@ -677,13 +654,18 @@ def review_interface():
     with col_review_time:
         st.empty() # Placeholder for potential countdown, handled by rerun
 
-    for i, item in enumerate(st.session_state.pending_review_data):
-        st.subheader(f"Review Item {i+1}: {item['type'].capitalize()}")
+    # Use an index to remove items correctly from the list
+    items_to_process = list(st.session_state.pending_review_data) # Create a copy to iterate
+    st.session_state.pending_review_data = [] # Clear the original, will repopulate with unprocessed
+
+    for item in items_to_process:
+        st.subheader(f"Review Item: {item['type'].capitalize()}")
         st.json(item['data']) # Display raw extracted data
 
         col_approve, col_edit, col_reject = st.columns(3)
         with col_approve:
-            if st.button(f"✅ Approve {item['type'].capitalize()}", key=f"approve_{item['data']['id']}"):
+            # Add a unique suffix to the key to prevent Streamlit warning about duplicate keys
+            if st.button(f"✅ Approve {item['type'].capitalize()}", key=f"approve_{item['data']['id']}_{uuid.uuid4()}"):
                 if item['type'] == 'person':
                     save_person(item['data'])
                 elif item['type'] == 'firm':
@@ -691,22 +673,24 @@ def review_interface():
                 elif item['type'] == 'employment':
                     save_employment(item['data'])
                 
-                st.session_state.pending_review_data.pop(i)
                 st.success(f"Approved {item['type'].capitalize()}!")
                 save_data()
                 st.rerun() # Rerun to update the list
+            else:
+                # If not approved/rejected, add it back to pending for next render
+                st.session_state.pending_review_data.append(item)
         with col_edit:
-            # Implement edit functionality here (e.g., open a modal or form)
-            st.button(f"✏️ Edit {item['type'].capitalize()}", key=f"edit_{item['data']['id']}", disabled=True) # Placeholder
+            st.button(f"✏️ Edit {item['type'].capitalize()}", key=f"edit_{item['data']['id']}_{uuid.uuid4()}", disabled=True)
         with col_reject:
-            if st.button(f"❌ Reject {item['type'].capitalize()}", key=f"reject_{item['data']['id']}"):
-                st.session_state.pending_review_data.pop(i)
+            # Add a unique suffix to the key to prevent Streamlit warning about duplicate keys
+            if st.button(f"❌ Reject {item['type'].capitalize()}", key=f"reject_{item['data']['id']}_{uuid.uuid4()}"):
                 st.warning(f"Rejected {item['type'].capitalize()}.")
-                st.rerun() # Rerun to update the list
+                # Do nothing, as it was already excluded from being added back
+                st.rerun()
 
     st.markdown("---")
     if st.button("Approve All Remaining"):
-        saved_count = auto_save_pending_reviews() # This function now auto-approves and saves
+        saved_count = auto_save_pending_reviews()
         st.success(f"✅ Approved and saved {saved_count} items from review queue!")
         st.rerun()
     if st.button("Reject All Remaining"):
@@ -725,13 +709,13 @@ def main_app():
     selected_model_key = st.sidebar.selectbox(
         "Choose Gemini Model:",
         list(GEMINI_MODELS.keys()),
-        index=list(GEMINI_MODELS.keys()).index(st.session_state.gemini_model_name), # Set initial value
+        index=list(GEMINI_MODELS.keys()).index(st.session_state.gemini_model_name),
         format_func=lambda x: GEMINI_MODELS[x]["display_name"],
         key="gemini_model_selector"
     )
     if selected_model_key != st.session_state.gemini_model_name:
         st.session_state.gemini_model_name = selected_model_key
-        st.rerun() # Rerun to apply new model configuration
+        st.rerun()
 
     st.sidebar.markdown(
         f"**Selected Model:** {GEMINI_MODELS[st.session_state.gemini_model_name]['display_name']}"
@@ -752,11 +736,9 @@ def main_app():
             if uploaded_file.type == "text/plain" or uploaded_file.type == "text/markdown":
                 document_content = load_file_content_enhanced(uploaded_file)
             elif uploaded_file.type == "application/pdf":
-                # For PDF, you'd typically need a PDF parsing library like PyPDF2 or pdfminer.six
                 st.warning("PDF parsing not implemented in this demo. Please upload text files.")
                 document_content = None
             elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                # For DOCX, you'd need a library like python-docx
                 st.warning("DOCX parsing not implemented in this demo. Please upload text files.")
                 document_content = None
             else:
@@ -765,31 +747,17 @@ def main_app():
 
             if document_content and GENAI_AVAILABLE and gemini_api_key:
                 if st.button("Extract Entities"):
-                    extracted_json = extract_info_gemini(document_content)
-                    if extracted_json:
-                        # Decide which items need review based on some criteria (e.g., confidence score, specific types)
-                        # For this example, let's say all extracted items are put into pending review
-                        
-                        temp_pending = []
-                        if 'people' in extracted_json:
-                            for p in extracted_json['people']:
-                                temp_pending.append({'type': 'person', 'data': p})
-                        if 'firms' in extracted_json:
-                            for f in extracted_json['firms']:
-                                temp_pending.append({'type': 'firm', 'data': f})
-                        if 'employments' in extracted_json:
-                            for e in extracted_json['employments']:
-                                temp_pending.append({'type': 'employment', 'data': e})
-                        
-                        if temp_pending:
-                            st.session_state.pending_review_data.extend(temp_pending)
-                            st.session_state.show_review_interface = True
-                            start_review_timeout()
-                            st.rerun() # Rerun to switch to review interface
-                        else:
-                            st.info("No entities extracted from the document or all were directly saved.")
-                            # If no items go to review, process and save directly
-                            process_extracted_data(extracted_json, document_content)
+                    # extract_info_gemini now processes and saves incrementally,
+                    # and returns the list of items needing review (if any)
+                    items_for_review = extract_info_gemini(document_content)
+                    
+                    if items_for_review: # If there are items needing review
+                        st.session_state.pending_review_data.extend(items_for_review)
+                        st.session_state.show_review_interface = True
+                        start_review_timeout()
+                        st.rerun() # Rerun to switch to review interface
+                    else:
+                        st.info("No entities extracted from the document or none required immediate review.")
                     
             elif not (GENAI_AVAILABLE and gemini_api_key):
                 st.info("AI extraction requires Gemini API configuration.")
@@ -955,13 +923,11 @@ def main_app():
         firms_data = list(st.session_state.firms.values())
         if firms_data:
             firms_df = pd.DataFrame(firms_data)
-            # --- FIX FOR KEYERROR ---
             # Rename columns to match the display expectations
             firms_df = firms_df.rename(columns={
                 'type': 'firm_type',
                 'founded_year': 'founded'
             })
-            # --- END FIX ---
 
             # Display with pagination and search
             search_query = st.text_input("Search Firms (Name, Type, Strategy, Location)", key="firm_search")
@@ -1120,8 +1086,6 @@ def main_app():
         st.header("🔍 All Raw Extractions")
         if st.session_state.all_extractions:
             all_extractions_df = pd.DataFrame(st.session_state.all_extractions)
-            # Flatten 'data' column for display, if it's structured
-            # For simplicity, we'll just display the type and the raw data
             st.dataframe(all_extractions_df[['type', 'data']], use_container_width=True, height=600)
         else:
             st.info("No raw extraction data available yet.")
@@ -1154,7 +1118,6 @@ def main_app():
                 )
             if st.session_state.firms:
                 firms_df = pd.DataFrame(list(st.session_state.firms.values()))
-                # Rename for export consistency if needed, or export as is
                 firms_df = firms_df.rename(columns={'type': 'firm_type', 'founded_year': 'founded'})
                 firms_csv = firms_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
@@ -1166,7 +1129,6 @@ def main_app():
                 )
             if st.session_state.employments:
                 employments_df = pd.DataFrame(list(st.session_state.employments.values()))
-                # Add human-readable names for export
                 employments_df['person_name'] = employments_df['person_id'].map(
                     {p_id: st.session_state.people[p_id]['name'] for p_id in st.session_state.people}
                 ).fillna('N/A')
@@ -1227,7 +1189,6 @@ def main_app():
                             employments_df.to_excel(writer, sheet_name='Employments', index=False)
                         if st.session_state.all_extractions:
                             all_extractions_df = pd.DataFrame(st.session_state.all_extractions)
-                            # You might need to flatten 'data' column more carefully for Excel
                             all_extractions_df.to_excel(writer, sheet_name='All_Extractions', index=False)
                     
                     st.download_button(
