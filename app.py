@@ -2013,58 +2013,152 @@ def approve_all_in_review(review_id):
     
     return review_item['reviewed_people'], review_item['reviewed_performance']
 
-def save_approved_extractions(people, performance, source_context=None):
-    """Save new people and performance with deduplication and update tracking"""
+def save_approved_extractions(approved_people, approved_performance, source_context=""):
+    """FIXED: Save approved extractions to main database with historical context and firm type inference"""
+    saved_people = 0
+    saved_performance = 0
     
-    existing_people = st.session_state.people
-    updated = 0
-    added = 0
-
-    # Index existing people by (name, current_company)
-    existing_index = {
-        (safe_get(p, 'name'), safe_get(p, 'current_company')): p for p in existing_people
+    # Create source metadata
+    source_metadata = {
+        "extraction_date": datetime.now().isoformat(),
+        "source_type": "newsletter_extraction", 
+        "context_preview": source_context[:500] + "..." if len(source_context) > 500 else source_context,
+        "total_people_in_batch": len(approved_people),
+        "total_metrics_in_batch": len(approved_performance)
     }
-
-    for new_person in people:
-        key = (safe_get(new_person, 'name'), safe_get(new_person, 'current_company'))
-
-        if key in existing_index:
-            person = existing_index[key]
-            changes = {}
-            
-            # Update fields if new data is better (non-empty and different)
-            for field in ['current_title', 'location', 'movement_type', 'previous_company', 'experience_years', 'expertise', 'seniority_level']:
-                old_val = person.get(field, '')
-                new_val = new_person.get(field, '')
-                if new_val and new_val != old_val:
-                    person[field] = new_val
-                    changes[field] = (old_val, new_val)
-
-            # Log update to extraction history if anything changed
-            if changes:
-                history_entry = {
-                    "extraction_date": datetime.now().isoformat(),
-                    "source_type": "merge_update",
-                    "changes": changes
-                }
-                person.setdefault("extraction_history", []).append(history_entry)
-                updated += 1
-
-        else:
-            # New entry
-            new_person["extraction_history"] = [{
-                "extraction_date": datetime.now().isoformat(),
-                "source_type": "new_extraction"
+    
+    # Process people with historical context
+    for person_data in approved_people:
+        new_person_id = str(uuid.uuid4())
+        company_name = person_data.get('current_company') or person_data.get('company', 'Unknown')
+        title = person_data.get('current_title') or person_data.get('title', 'Unknown')
+        
+        # Create person with historical notes
+        new_person = {
+            "id": new_person_id,
+            "name": safe_get(person_data, 'name'),
+            "current_title": title,
+            "current_company_name": company_name,
+            "location": safe_get(person_data, 'location'),
+            "email": "",
+            "linkedin_profile_url": "",
+            "phone": "",
+            "education": "",
+            "expertise": safe_get(person_data, 'expertise'),
+            "aum_managed": "",
+            "strategy": safe_get(person_data, 'expertise', 'Unknown'),
+            "created_date": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat(),
+            # Historical context
+            "extraction_history": [{
+                **source_metadata,
+                "movement_type": safe_get(person_data, 'movement_type'),
+                "previous_company": safe_get(person_data, 'previous_company'),
+                "seniority_level": safe_get(person_data, 'seniority_level'),
+                "original_extraction": person_data
             }]
-            existing_people.append(new_person)
-            added += 1
-
-    st.session_state.people = existing_people
-
-    # Merge performance as-is (can also dedupe if needed)
-    st.session_state.firms = merge_performance_data(st.session_state.firms, performance)
-
-    return added, len(performance)
+        }
+        
+        st.session_state.people.append(new_person)
+        
+        # FIXED: Add firm if doesn't exist with proper firm type inference
+        if not get_firm_by_name(company_name):
+            # FIXED: Infer firm type based on company name and person context
+            firm_type = infer_firm_type(company_name, person_data)
+            
+            new_firm = {
+                "id": str(uuid.uuid4()),
+                "name": company_name,
+                "firm_type": firm_type,  # FIXED: Added proper firm type
+                "location": safe_get(person_data, 'location'),
+                "headquarters": "Unknown",
+                "aum": "Unknown",
+                "founded": None,
+                "strategy": safe_get(person_data, 'expertise', 'Various'),
+                "website": "",
+                "description": f"{firm_type} - extracted from newsletter intelligence",
+                "performance_metrics": [],
+                "created_date": datetime.now().isoformat(),
+                "last_updated": datetime.now().isoformat(),
+                # Historical context for firm
+                "extraction_history": [{
+                    **source_metadata,
+                    "discovered_through": f"Employee extraction: {safe_get(person_data, 'name')}",
+                    "original_context": person_data
+                }]
+            }
+            st.session_state.firms.append(new_firm)
+        
+        # Add employment record with context - FIXED: Include date handling
+        employment_start_date = date.today()  # Default to today for extracted people
+        add_employment_with_dates(
+            new_person_id, 
+            company_name, 
+            title, 
+            employment_start_date, 
+            None,  # No end date (current position)
+            safe_get(person_data, 'location'), 
+            safe_get(person_data, 'expertise', 'Unknown')
+        )
+        
+        saved_people += 1
+    
+    # Process performance metrics with historical context
+    for metric in approved_performance:
+        fund_name = safe_get(metric, 'fund_name')
+        matching_firm = None
+        
+        for firm in st.session_state.firms:
+            firm_name = safe_get(firm, 'name').lower()
+            if fund_name.lower() in firm_name or firm_name in fund_name.lower():
+                matching_firm = firm
+                break
+        
+        if matching_firm:
+            if 'performance_metrics' not in matching_firm:
+                matching_firm['performance_metrics'] = []
+            
+            # Add metric with historical context
+            enhanced_metric = {
+                **metric,
+                "id": str(uuid.uuid4()),
+                "recorded_date": datetime.now().isoformat(),
+                "extraction_context": source_metadata,
+                "source_reliability": "newsletter_extraction"
+            }
+            
+            # Check for duplicates
+            existing = any(
+                m.get('metric_type') == metric.get('metric_type') and 
+                m.get('period') == metric.get('period') and
+                m.get('date') == metric.get('date')
+                for m in matching_firm['performance_metrics']
+            )
+            
+            if not existing:
+                matching_firm['performance_metrics'].append(enhanced_metric)
+                
+                # Update firm's last_updated
+                matching_firm['last_updated'] = datetime.now().isoformat()
+                
+                # Add to firm's extraction history if it exists
+                if 'extraction_history' not in matching_firm:
+                    matching_firm['extraction_history'] = []
+                
+                matching_firm['extraction_history'].append({
+                    **source_metadata,
+                    "content_type": "performance_metric",
+                    "metric_added": {
+                        "type": safe_get(metric, 'metric_type'),
+                        "value": safe_get(metric, 'value'),
+                        "period": safe_get(metric, 'period')
+                    }
+                })
+                
+                saved_performance += 1
+    
+    save_data()
+    return saved_people, saved_performance
 
 def infer_firm_type(company_name, person_data=None):
     """FIXED: Infer firm type based on company name and context"""
