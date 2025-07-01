@@ -252,7 +252,7 @@ def delete_employment(employment_id):
 # and up-to-date rate limits for your specific region, project, and model tier.
 # https://ai.google.dev/gemini-api/docs/rate-limits
 GEMINI_MODELS = {
-    "gemini-1.5-flash": {"display_name": "Gemini 1.5 Flash (Fast, Cost-Efficient)", "rpm_limit": 150},
+    "gemini-1.5-flash": {"display_name": "Gemini 1.5 Flash (Fast, Cost-Efficient)", "rpm_limit": 2000}, # UPDATED RPM
     "gemini-1.5-pro": {"display_name": "Gemini 1.5 Pro (Powerful, Large Context)", "rpm_limit": 50},
     "gemini-pro": {"display_name": "Gemini Pro (Legacy, General Purpose)", "rpm_limit": 60}
     # Add other models as they become available or relevant to your use case
@@ -361,7 +361,7 @@ if GENAI_AVAILABLE:
         st.session_state.gemini_model_name = list(GEMINI_MODELS.keys())[0] # Default to the first model
 
     # --- Constants for Token-Aware Chunking ---
-    MAX_TOKENS_PER_CHUNK = 900000 
+    MAX_TOKENS_PER_CHUNK = 950000 # UPDATED: Increased to better utilize the model's context window and your 4M TPM
     OVERLAP_TOKENS = 100
 
     def chunk_text_by_tokens(model, text, max_chunk_tokens, overlap_tokens):
@@ -1213,7 +1213,7 @@ with col1:
 with col2:
     st.markdown("📊 Performance Tracking") 
 with col3:
-    st.markdown("**🤝 Professional Networks**")
+    st.markdown("🤝 Professional Networks")
 with col4:
     st.markdown("📋 Smart Review System")
 
