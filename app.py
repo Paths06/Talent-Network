@@ -363,6 +363,7 @@ if GENAI_AVAILABLE:
     # --- Constants for Token-Aware Chunking ---
     # These values are conservative. Refer to Gemini API docs for exact limits and tune.
     # For gemini-1.5-flash (1M tokens), a chunk size of 900,000 leaves room for prompt/response overhead.
+    # If JSON parsing errors persist, consider reducing MAX_TOKENS_PER_CHUNK further (e.g., to 500000 or 700000)
     MAX_TOKENS_PER_CHUNK = 900000 
     OVERLAP_TOKENS = 100 # Number of tokens to overlap between chunks to maintain context
 
@@ -487,6 +488,8 @@ if GENAI_AVAILABLE:
         total_chunks = len(chunks)
         st.info(f"Processing {total_chunks} chunks using {st.session_state.gemini_model_name}...")
 
+        max_retries = 3 # Define max retries
+        
         for i, chunk in enumerate(chunks):
             st.subheader(f"Processing chunk {i+1} of {total_chunks}")
             
@@ -504,34 +507,44 @@ if GENAI_AVAILABLE:
             st.session_state.last_extraction_time = datetime.now()
             # --- End Throttling Logic ---
 
-            try:
-                response = current_model.generate_content(chunk)
-                response_text = response.text.strip()
-                
-                # --- NEW: Clean response_text before JSON parsing ---
-                # Remove leading "```json" and trailing "```" if present
-                if response_text.startswith("```json"):
-                    response_text = response_text[len("```json"):].strip()
-                if response_text.endswith("```"):
-                    response_text = response_text[:-len("```")].strip()
-                # --- END NEW ---
+            # --- Retry mechanism for API calls and JSON parsing ---
+            for attempt in range(max_retries):
+                try:
+                    response = current_model.generate_content(chunk)
+                    response_text = response.text.strip()
+                    
+                    # Remove leading "```json" and trailing "```" if present
+                    if response_text.startswith("```json"):
+                        response_text = response_text[len("```json"):].strip()
+                    if response_text.endswith("```"):
+                        response_text = response_text[:-len("```")].strip()
 
-                chunk_extracted_data = json.loads(response_text)
+                    chunk_extracted_data = json.loads(response_text)
 
-                # Combine results from this chunk with overall results
-                for key in all_extracted_data.keys():
-                    if key in chunk_extracted_data and isinstance(chunk_extracted_data[key], list):
-                        all_extracted_data[key].extend(chunk_extracted_data[key])
-                
-                st.success(f"Chunk {i+1} extracted successfully!")
-            except ValueError as ve:
-                st.error(f"Failed to parse JSON from Gemini response for chunk {i+1}: {ve}. Response was: {response_text[:500]}...")
-                # Continue to next chunk even if one fails
-            except Exception as e:
-                st.error(f"Error during Gemini API call for chunk {i+1}: {e}")
-                if hasattr(e, '_error_response') and e._error_response:
-                    st.error(f"API Error Details: {e._error_response}")
-                # Continue to next chunk even if one fails
+                    # Combine results from this chunk with overall results
+                    for key in all_extracted_data.keys():
+                        if key in chunk_extracted_data and isinstance(chunk_extracted_data[key], list):
+                            all_extracted_data[key].extend(chunk_extracted_data[key])
+                    
+                    st.success(f"Chunk {i+1} extracted successfully!")
+                    break # Break from retry loop if successful
+                except ValueError as ve:
+                    st.error(f"Attempt {attempt + 1}/{max_retries}: Failed to parse JSON from Gemini response for chunk {i+1}: {ve}. Response was: \n```json\n{response_text}\n```")
+                    if attempt < max_retries - 1:
+                        st.info(f"Retrying chunk {i+1} in 2 seconds...")
+                        time.sleep(2) # Wait before retrying
+                    else:
+                        st.error(f"Max retries reached for chunk {i+1}. Skipping this chunk.")
+                except Exception as e:
+                    st.error(f"Attempt {attempt + 1}/{max_retries}: Error during Gemini API call for chunk {i+1}: {e}")
+                    if hasattr(e, '_error_response') and e._error_response:
+                        st.error(f"API Error Details: {e._error_response}")
+                    if attempt < max_retries - 1:
+                        st.info(f"Retrying chunk {i+1} in 2 seconds...")
+                        time.sleep(2) # Wait before retrying
+                    else:
+                        st.error(f"Max retries reached for chunk {i+1}. Skipping this chunk.")
+            # --- End Retry mechanism ---
         
         st.success("All chunks processed. Combining results...")
         return all_extracted_data
@@ -789,7 +802,7 @@ def main_app():
     ])
 
     with tab1:
-        st.header("Asian Hedge Fund Talent Dashboard")
+        st.header("📊 Asian Hedge Fund Talent Dashboard")
         
         # --- Key Metrics ---
         col1, col2, col3 = st.columns(3)
@@ -1237,11 +1250,11 @@ col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown("**🔍 Global Search**")
 with col2:
-    st.markdown("**📊 Performance Tracking**") 
+    st.markdown("📊 Performance Tracking") 
 with col3:
     st.markdown("**🤝 Professional Networks**")
 with col4:
-    st.markdown("**📋 Smart Review System**")
+    st.markdown("📋 Smart Review System")
 
 # Auto-save functionality
 current_time = datetime.now()
@@ -1253,7 +1266,7 @@ if time_since_save > 30 and (st.session_state.people or st.session_state.firms o
     save_data()
     st.session_state.last_auto_save = current_time
 
-# Handle review timeout (if review interface is shown)
+# Handle review timeout
 if st.session_state.show_review_interface and st.session_state.pending_review_data:
     if get_review_time_remaining() <= 0:
         saved_count = auto_save_pending_reviews()
