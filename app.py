@@ -2013,7 +2013,7 @@ def approve_all_in_review(review_id):
     
     return review_item['reviewed_people'], review_item['reviewed_performance']
 
-def save_approved_extractions(people, performance):
+def save_approved_extractions(people, performance, source_context=None):
     """Save new people and performance with deduplication and update tracking"""
     
     existing_people = st.session_state.people
