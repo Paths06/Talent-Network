@@ -95,7 +95,7 @@ st.sidebar.header("⚙️ Configuration")
 
 # API Key Input
 try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     st.sidebar.success("API key loaded from secrets!", icon="✅")
 except (FileNotFoundError, KeyError):
     st.sidebar.warning("API key not found in secrets.", icon="⚠️")
