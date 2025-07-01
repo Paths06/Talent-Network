@@ -11,6 +11,7 @@ from pathlib import Path
 import logging
 import threading
 import queue
+import re
 
 # Additional imports for enhanced export functionality
 import zipfile
@@ -54,11 +55,111 @@ def safe_get(data, key, default='Unknown'):
         logger.warning(f"Error in safe_get for key {key}: {e}")
         return default
 
+# --- FIXED: Enhanced JSON repair and cleanup function ---
+def repair_json_response(json_text):
+    """Repair common JSON formatting issues from AI responses"""
+    try:
+        # Remove any text before the first {
+        json_start = json_text.find('{')
+        if json_start > 0:
+            json_text = json_text[json_start:]
+        
+        # Remove any text after the last }
+        json_end = json_text.rfind('}')
+        if json_end > 0:
+            json_text = json_text[:json_end + 1]
+        
+        # Fix common JSON issues
+        
+        # 1. Fix trailing commas before closing brackets/braces
+        json_text = re.sub(r',(\s*[}\]])', r'\1', json_text)
+        
+        # 2. Fix missing commas between objects/arrays
+        json_text = re.sub(r'}\s*{', r'},{', json_text)
+        json_text = re.sub(r']\s*\[', r'],[', json_text)
+        
+        # 3. Fix quotes around property names
+        json_text = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', json_text)
+        
+        # 4. Fix unescaped quotes in strings
+        json_text = re.sub(r'(?<!\\)"(?![,}\]:])([^"]*)"(?![,}\]:])([^"]*)"', r'"\1\"\2"', json_text)
+        
+        # 5. Handle truncated strings (add closing quote)
+        lines = json_text.split('\n')
+        for i, line in enumerate(lines):
+            # If line ends with incomplete string, try to close it
+            if '"' in line and line.count('"') % 2 == 1 and not line.rstrip().endswith('"'):
+                lines[i] = line + '"'
+        json_text = '\n'.join(lines)
+        
+        # 6. Handle incomplete objects - add closing braces if needed
+        open_braces = json_text.count('{') - json_text.count('}')
+        open_brackets = json_text.count('[') - json_text.count(']')
+        
+        # Add missing closing braces
+        for _ in range(open_braces):
+            json_text += '}'
+        
+        # Add missing closing brackets  
+        for _ in range(open_brackets):
+            json_text += ']'
+            
+        # 7. Remove any remaining content after the main JSON object
+        try:
+            # Find the main object boundaries
+            brace_count = 0
+            end_pos = -1
+            for i, char in enumerate(json_text):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_pos = i + 1
+                        break
+            
+            if end_pos > 0:
+                json_text = json_text[:end_pos]
+        except:
+            pass
+            
+        return json_text
+        
+    except Exception as e:
+        logger.warning(f"JSON repair failed: {e}")
+        return json_text
+
+# --- FIXED: Calculate date overlap for work history ---
+def calculate_date_overlap(start1, end1, start2, end2):
+    """
+    Calculate overlap between two date periods
+    Returns: (overlap_start, overlap_end, overlap_days) or None if no overlap
+    """
+    try:
+        # Handle None end dates (current positions)
+        if end1 is None:
+            end1 = date.today()
+        if end2 is None:
+            end2 = date.today()
+        
+        # Find overlap
+        overlap_start = max(start1, start2)
+        overlap_end = min(end1, end2)
+        
+        # Check if there's actual overlap
+        if overlap_start <= overlap_end:
+            overlap_days = (overlap_end - overlap_start).days + 1
+            return overlap_start, overlap_end, overlap_days
+        else:
+            return None
+            
+    except Exception as e:
+        logger.warning(f"Error calculating date overlap: {e}")
+        return None
+
 # --- FIXED: Simple text input function for use in forms ---
 def simple_text_input(field_name, current_value, context="", suggestions=None):
-    """
-    Simple text input that works inside forms - no buttons or complex logic
-    """
+    """Simple text input that works inside forms - no buttons or complex logic"""
     placeholder = f"Enter {field_name.replace('_', ' ')}"
     if suggestions and len(suggestions) > 0:
         placeholder += f" (e.g., {suggestions[0]})"
@@ -72,10 +173,7 @@ def simple_text_input(field_name, current_value, context="", suggestions=None):
 
 # --- FIXED: Enhanced dynamic input that works outside forms ---
 def handle_dynamic_input(field_name, current_value, table_name, context=""):
-    """
-    Enhanced dynamic input that prioritizes typing with suggestions
-    ONLY USE OUTSIDE OF FORMS due to button limitations
-    """
+    """Enhanced dynamic input that prioritizes typing with suggestions"""
     import streamlit as st
     
     # Get existing options from database based on field and table
@@ -121,12 +219,7 @@ def handle_dynamic_input(field_name, current_value, table_name, context=""):
 
 # --- Enhanced File Loading with Encoding Detection ---
 def load_file_content_enhanced(uploaded_file):
-    """
-    Enhanced file loading with robust encoding detection and error handling
-    
-    Returns:
-        tuple: (success: bool, content: str, error_message: str, encoding_used: str)
-    """
+    """Enhanced file loading with robust encoding detection and error handling"""
     try:
         file_size = len(uploaded_file.getvalue())
         file_size_mb = file_size / (1024 * 1024)
@@ -553,7 +646,7 @@ def init_dummy_data():
         {
             "id": str(uuid.uuid4()),
             "name": "Hillhouse Capital",
-            "firm_type": "Asset Manager",  # FIXED: Added firm_type
+            "firm_type": "Asset Manager",
             "location": "Hong Kong",
             "headquarters": "Beijing, China",
             "aum": "60B USD",
@@ -584,7 +677,7 @@ def init_dummy_data():
         {
             "id": str(uuid.uuid4()),
             "name": "Millennium Partners Asia",
-            "firm_type": "Hedge Fund",  # FIXED: Added firm_type
+            "firm_type": "Hedge Fund",
             "location": "Singapore",
             "headquarters": "New York, USA",
             "aum": "35B USD",
@@ -615,7 +708,7 @@ def init_dummy_data():
         {
             "id": str(uuid.uuid4()),
             "name": "Citadel Asia",
-            "firm_type": "Hedge Fund",  # FIXED: Added firm_type
+            "firm_type": "Hedge Fund",
             "location": "Hong Kong",
             "headquarters": "Chicago, USA",
             "aum": "45B USD",
@@ -634,10 +727,10 @@ def init_dummy_data():
         }
     ]
     
-    # Create employment history with overlaps
+    # Create employment history with overlaps using FIXED date ranges
     sample_employments = []
     
-    # Li Wei Chen's history (Hillhouse Capital)
+    # Li Wei Chen's history (Hillhouse Capital) - WITH DATES
     li_id = sample_people[0]['id']
     sample_employments.extend([
         {
@@ -661,12 +754,47 @@ def init_dummy_data():
             "company_name": "Hillhouse Capital",
             "title": "Portfolio Manager",
             "start_date": date(2021, 9, 1),
-            "end_date": None,
+            "end_date": None,  # Current position
             "location": "Hong Kong",
             "strategy": "Growth Equity",
             "created_date": (datetime.now() - timedelta(days=30)).isoformat(),
             "extraction_context": {
                 "extraction_date": (datetime.now() - timedelta(days=30)).isoformat(),
+                "source_type": "sample_data"
+            }
+        }
+    ])
+    
+    # Akira Tanaka's history - WITH OVERLAPPING DATES at Goldman Sachs
+    akira_id = sample_people[1]['id']
+    sample_employments.extend([
+        {
+            "id": str(uuid.uuid4()),
+            "person_id": akira_id,
+            "company_name": "Goldman Sachs Asia",
+            "title": "Associate",
+            "start_date": date(2017, 6, 1),
+            "end_date": date(2020, 12, 31),  # OVERLAPS with Li Wei Chen!
+            "location": "Singapore",
+            "strategy": "Fixed Income Trading",
+            "created_date": (datetime.now() - timedelta(days=15)).isoformat(),
+            "extraction_context": {
+                "extraction_date": (datetime.now() - timedelta(days=15)).isoformat(),
+                "source_type": "sample_data"
+            }
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "person_id": akira_id,
+            "company_name": "Millennium Partners Asia",
+            "title": "Chief Investment Officer",
+            "start_date": date(2021, 1, 15),
+            "end_date": None,  # Current position
+            "location": "Singapore",
+            "strategy": "Multi-Strategy Quantitative",
+            "created_date": (datetime.now() - timedelta(days=15)).isoformat(),
+            "extraction_context": {
+                "extraction_date": (datetime.now() - timedelta(days=15)).isoformat(),
                 "source_type": "sample_data"
             }
         }
@@ -938,8 +1066,9 @@ def preprocess_newsletter_text(text, mode="balanced"):
     
     return text
 
+# --- FIXED: Enhanced single chunk extraction with better JSON handling ---
 def extract_single_chunk_safe(text, model):
-    """Enhanced single chunk extraction with timeout and improved error handling"""
+    """FIXED: Enhanced single chunk extraction with improved JSON parsing and error handling"""
     try:
         cached_context = create_cached_context()
         prompt = build_extraction_prompt_with_cache(text, cached_context)
@@ -963,6 +1092,7 @@ def extract_single_chunk_safe(text, model):
         logger.info(f"Extracting with model {model.model_id}, timeout: {timeout}s, chunk size: {len(text)}")
         
         # Generate content with timeout handling
+        response = None
         try:
             response = model.generate_content(prompt, generation_config=generation_config)
             
@@ -983,34 +1113,91 @@ def extract_single_chunk_safe(text, model):
             else:
                 raise generation_error
         
-        # Parse JSON safely with better error handling
+        # FIXED: Enhanced JSON parsing with repair logic
         response_text = response.text.strip()
+        logger.debug(f"Raw response length: {len(response_text)} chars")
+        
+        # Try to find JSON boundaries
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
         
         if json_start == -1 or json_end <= json_start:
-            logger.warning("No valid JSON found in AI response")
-            # Try to find JSON in different formats
-            import re
+            logger.warning("No valid JSON boundaries found in AI response")
+            # Try regex approach for partial JSON
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 json_text = json_match.group()
+                logger.info("Found JSON using regex fallback")
             else:
-                logger.warning("No JSON found even with regex")
+                logger.error("No JSON found even with regex")
                 return [], []
         else:
             json_text = response_text[json_start:json_end]
         
+        # First attempt: Parse as-is
+        result = None
         try:
             result = json.loads(json_text)
-        except json.JSONDecodeError as json_error:
-            logger.error(f"JSON parsing failed: {json_error}")
-            logger.error(f"JSON text: {json_text[:500]}...")
+            logger.info("JSON parsed successfully on first attempt")
+        except json.JSONDecodeError as first_error:
+            logger.warning(f"Initial JSON parsing failed: {first_error}")
+            logger.warning(f"Error position: line {getattr(first_error, 'lineno', 'unknown')}, column {getattr(first_error, 'colno', 'unknown')}")
+            
+            # Second attempt: Try repair and parse
+            try:
+                repaired_json = repair_json_response(json_text)
+                result = json.loads(repaired_json)
+                logger.info("JSON parsed successfully after repair")
+            except json.JSONDecodeError as repair_error:
+                logger.error(f"JSON repair also failed: {repair_error}")
+                logger.error(f"Original JSON snippet: {json_text[:500]}...")
+                logger.error(f"Repaired JSON snippet: {repaired_json[:500] if 'repaired_json' in locals() else 'N/A'}...")
+                
+                # Third attempt: Try to extract partial data
+                try:
+                    # Try to find at least the people/firms/performance arrays
+                    partial_result = {"people": [], "firms": [], "performance": []}
+                    
+                    # Look for people array
+                    people_match = re.search(r'"people"\s*:\s*\[(.*?)\]', json_text, re.DOTALL)
+                    if people_match:
+                        try:
+                            people_json = '[' + people_match.group(1) + ']'
+                            people_data = json.loads(people_json)
+                            partial_result["people"] = people_data
+                            logger.info(f"Extracted {len(people_data)} people from partial JSON")
+                        except:
+                            pass
+                    
+                    # Look for performance array
+                    perf_match = re.search(r'"performance"\s*:\s*\[(.*?)\]', json_text, re.DOTALL)
+                    if perf_match:
+                        try:
+                            perf_json = '[' + perf_match.group(1) + ']'
+                            perf_data = json.loads(perf_json)
+                            partial_result["performance"] = perf_data
+                            logger.info(f"Extracted {len(perf_data)} performance metrics from partial JSON")
+                        except:
+                            pass
+                    
+                    if partial_result["people"] or partial_result["performance"]:
+                        result = partial_result
+                        logger.info("Successfully extracted partial data despite JSON errors")
+                    else:
+                        logger.error("No usable data could be extracted")
+                        return [], []
+                        
+                except Exception as partial_error:
+                    logger.error(f"Partial extraction also failed: {partial_error}")
+                    return [], []
+        
+        if not result:
+            logger.error("All JSON parsing attempts failed")
             return [], []
         
         people = result.get('people', [])
         performance = result.get('performance', [])
-        firms = result.get('firms', [])  # FIXED: Extract firms data for validation
+        firms = result.get('firms', [])  # Extract firms data for validation
         
         # Enhanced validation with better logging
         valid_people = []
@@ -1071,7 +1258,7 @@ def extract_single_chunk_safe(text, model):
         logger.error(f"Extraction timed out: {timeout_error}")
         raise timeout_error
     except json.JSONDecodeError as json_error:
-        logger.error(f"JSON parsing failed: {json_error}")
+        logger.error(f"All JSON parsing methods failed: {json_error}")
         return [], []
     except Exception as e:
         logger.error(f"Enhanced extraction failed: {e}")
@@ -1464,30 +1651,113 @@ def get_firm_performance_metrics(firm_id):
         return []
     return firm.get('performance_metrics', [])
 
-# --- SIMPLIFIED SHARED WORK HISTORY SYSTEM (NO DATE OVERLAP) ---
-
+# --- FIXED: Enhanced shared work history with date overlap calculations ---
 def get_shared_work_history(person_id):
-    """Get people who have worked at the same companies (no date overlap needed)"""
+    """FIXED: Get people who have overlapping work periods at the same companies"""
     person_employments = get_employments_by_person_id(person_id)
     shared_history = []
     
-    # Get all companies this person has worked at
-    person_companies = set(emp['company_name'] for emp in person_employments)
+    # Get all companies this person has worked at with their periods
+    person_company_periods = []
+    for emp in person_employments:
+        if emp.get('start_date'):  # Only include employments with start dates
+            person_company_periods.append({
+                'company': emp['company_name'],
+                'start_date': emp['start_date'],
+                'end_date': emp.get('end_date'),  # Can be None for current positions
+                'title': emp['title'],
+                'location': emp.get('location', 'Unknown')
+            })
     
+    # Find overlapping colleagues
     for other_person in st.session_state.people:
         if other_person['id'] == person_id:
             continue
         
         other_employments = get_employments_by_person_id(other_person['id'])
-        other_companies = set(emp['company_name'] for emp in other_employments)
+        other_company_periods = []
         
-        # Find shared companies
+        for emp in other_employments:
+            if emp.get('start_date'):  # Only include employments with start dates
+                other_company_periods.append({
+                    'company': emp['company_name'],
+                    'start_date': emp['start_date'],
+                    'end_date': emp.get('end_date'),  # Can be None for current positions
+                    'title': emp['title'],
+                    'location': emp.get('location', 'Unknown')
+                })
+        
+        # Check for overlapping periods at same companies
+        for person_period in person_company_periods:
+            for other_period in other_company_periods:
+                if person_period['company'] == other_period['company']:
+                    # Calculate overlap
+                    overlap = calculate_date_overlap(
+                        person_period['start_date'], person_period['end_date'],
+                        other_period['start_date'], other_period['end_date']
+                    )
+                    
+                    if overlap:
+                        overlap_start, overlap_end, overlap_days = overlap
+                        
+                        # Calculate overlap duration in human-readable format
+                        if overlap_days >= 365:
+                            duration_str = f"{overlap_days // 365} year(s), {(overlap_days % 365) // 30} month(s)"
+                        elif overlap_days >= 30:
+                            duration_str = f"{overlap_days // 30} month(s)"
+                        else:
+                            duration_str = f"{overlap_days} day(s)"
+                        
+                        # Format overlap period
+                        overlap_period = f"{overlap_start.strftime('%b %Y')} - {overlap_end.strftime('%b %Y')}"
+                        
+                        shared_history.append({
+                            "colleague_name": safe_get(other_person, 'name'),
+                            "colleague_id": other_person['id'],
+                            "shared_company": person_period['company'],
+                            "colleague_current_company": safe_get(other_person, 'current_company_name'),
+                            "colleague_current_title": safe_get(other_person, 'current_title'),
+                            "person_title": person_period['title'],
+                            "colleague_title": other_period['title'],
+                            "colleague_email": safe_get(other_person, 'email'),
+                            "colleague_linkedin": safe_get(other_person, 'linkedin_profile_url'),
+                            "overlap_start": overlap_start,
+                            "overlap_end": overlap_end,
+                            "overlap_days": overlap_days,
+                            "overlap_duration": duration_str,
+                            "overlap_period": overlap_period,
+                            "connection_type": "Overlapping Tenure",
+                            "connection_strength": "Strong" if overlap_days >= 365 else "Medium" if overlap_days >= 90 else "Brief"
+                        })
+    
+    # Remove duplicates (same person, different overlapping periods) and consolidate
+    unique_shared = {}
+    for item in shared_history:
+        key = f"{item['colleague_id']}_{item['shared_company']}"
+        if key not in unique_shared:
+            unique_shared[key] = item
+        else:
+            # If same person and company but different overlap, keep the longer one
+            existing = unique_shared[key]
+            if item['overlap_days'] > existing['overlap_days']:
+                unique_shared[key] = item
+    
+    # Also find people who worked at same companies but with no overlap (legacy connections)
+    for other_person in st.session_state.people:
+        if other_person['id'] == person_id:
+            continue
+            
+        other_employments = get_employments_by_person_id(other_person['id'])
+        other_companies = set(emp['company_name'] for emp in other_employments)
+        person_companies = set(emp['company_name'] for emp in person_employments)
+        
         shared_companies = person_companies.intersection(other_companies)
         
-        if shared_companies:
-            # For each shared company, add a connection
-            for company in shared_companies:
-                # Get the person's role at this company
+        for company in shared_companies:
+            # Check if we already have an overlapping connection for this person/company
+            key = f"{other_person['id']}_{company}"
+            if key not in unique_shared:
+                # Add as non-overlapping connection
                 person_emp = next((emp for emp in person_employments if emp['company_name'] == company), None)
                 other_emp = next((emp for emp in other_employments if emp['company_name'] == company), None)
                 
@@ -1502,23 +1772,71 @@ def get_shared_work_history(person_id):
                         "colleague_title": other_emp['title'],
                         "colleague_email": safe_get(other_person, 'email'),
                         "colleague_linkedin": safe_get(other_person, 'linkedin_profile_url'),
-                        "connection_type": "Same Company"  # Simple connection type
+                        "overlap_days": 0,
+                        "overlap_duration": "No overlap",
+                        "overlap_period": "Different periods",
+                        "connection_type": "Same Company (No Overlap)",
+                        "connection_strength": "Weak"
                     })
     
-    # Remove duplicates (same person, different companies) and sort by name
-    unique_shared = {}
-    for item in shared_history:
-        key = f"{item['colleague_id']}"
-        if key not in unique_shared:
-            unique_shared[key] = item
-        else:
-            # If same person but different company, combine the companies
-            existing = unique_shared[key]
-            if existing['shared_company'] != item['shared_company']:
-                existing['shared_company'] = f"{existing['shared_company']}, {item['shared_company']}"
-                existing['connection_type'] = "Multiple Companies"
+    # Convert back to list and sort by connection strength and overlap duration
+    all_connections = list(unique_shared.values()) + [item for item in shared_history if item.get('overlap_days', 0) == 0]
     
-    return sorted(unique_shared.values(), key=lambda x: x['colleague_name'])
+    # Sort: Strong connections first, then by overlap days (longest first), then by name
+    def sort_key(conn):
+        strength_order = {"Strong": 0, "Medium": 1, "Brief": 2, "Weak": 3}
+        return (
+            strength_order.get(conn.get('connection_strength', 'Weak'), 3),
+            -conn.get('overlap_days', 0),  # Negative for descending order
+            conn['colleague_name']
+        )
+    
+    return sorted(all_connections, key=sort_key)
+
+# --- FIXED: Enhanced employment addition with date validation ---
+def add_employment_with_dates(person_id, company_name, title, start_date, end_date=None, location="Unknown", strategy="Unknown"):
+    """Add employment record with proper date validation"""
+    try:
+        # Validate dates
+        if end_date and start_date and end_date <= start_date:
+            raise ValueError("End date must be after start date")
+        
+        # Check for overlapping employments for the same person
+        existing_employments = get_employments_by_person_id(person_id)
+        for emp in existing_employments:
+            if emp.get('start_date') and start_date:
+                existing_start = emp['start_date']
+                existing_end = emp.get('end_date')
+                
+                # Check for overlap
+                overlap = calculate_date_overlap(existing_start, existing_end, start_date, end_date)
+                if overlap and emp['company_name'] != company_name:
+                    logger.warning(f"Potential employment overlap detected: {company_name} vs {emp['company_name']}")
+        
+        new_employment = {
+            "id": str(uuid.uuid4()),
+            "person_id": person_id,
+            "company_name": company_name,
+            "title": title,
+            "start_date": start_date,
+            "end_date": end_date,
+            "location": location,
+            "strategy": strategy,
+            "created_date": datetime.now().isoformat(),
+            "extraction_context": {
+                "extraction_date": datetime.now().isoformat(),
+                "source_type": "manual_entry",
+                "entry_method": "employment_form"
+            }
+        }
+        
+        st.session_state.employments.append(new_employment)
+        save_data()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error adding employment: {e}")
+        return False
 
 # --- PAGINATION HELPERS ---
 def paginate_data(data, page, items_per_page=10):
@@ -1770,19 +2088,17 @@ def save_approved_extractions(approved_people, approved_performance, source_cont
             }
             st.session_state.firms.append(new_firm)
         
-        # Add employment record with context
-        st.session_state.employments.append({
-            "id": str(uuid.uuid4()),
-            "person_id": new_person_id,
-            "company_name": company_name,
-            "title": title,
-            "start_date": date.today(),
-            "end_date": None,
-            "location": safe_get(person_data, 'location'),
-            "strategy": safe_get(person_data, 'expertise', 'Unknown'),
-            "created_date": datetime.now().isoformat(),
-            "extraction_context": source_metadata
-        })
+        # Add employment record with context - FIXED: Include date handling
+        employment_start_date = date.today()  # Default to today for extracted people
+        add_employment_with_dates(
+            new_person_id, 
+            company_name, 
+            title, 
+            employment_start_date, 
+            None,  # No end date (current position)
+            safe_get(person_data, 'location'), 
+            safe_get(person_data, 'expertise', 'Unknown')
+        )
         
         saved_people += 1
     
@@ -2023,9 +2339,9 @@ with st.sidebar:
         "Gemini 1.5 Flash 8B": "gemini-1.5-flash-8b",
         "Gemini 1.5 Pro": "gemini-1.5-pro",
         "Gemini 1.5 Pro Latest": "gemini-1.5-pro-latest",
-        "Gemini 2.0 Flash": "gemini-2.0-flash-thinking-exp",  # Actual 2.0
+        "Gemini 2.0 Flash": "gemini-2.0-flash-thinking-exp",
         "Gemini 2.0 Flash Experimental": "gemini-2.0-flash-exp",
-        "Gemini 2.5 Flash": "gemini-2.5-flash-exp",  # Latest 2.5
+        "Gemini 2.5 Flash": "gemini-2.5-flash-exp",
         "Gemini Experimental 1114": "gemini-exp-1114",
         "Gemini Experimental 1121": "gemini-exp-1121"
     }
@@ -2055,11 +2371,11 @@ with st.sidebar:
     st.caption(f"⚡ Flash 1.5: {rate_limits['requests_per_minute']} req/min, {delay_str}{batching_info}")
     
     # Show optimization note
-    if rate_limits['requests_per_minute'] >= 2000:  # 2000 RPM Flash
+    if rate_limits['requests_per_minute'] >= 2000:
         st.success("🚀 **2000 RPM OPTIMIZED**: Ultra-fast batched processing with massive chunks!")
-    elif rate_limits['requests_per_minute'] >= 1000:  # 1000+ RPM
+    elif rate_limits['requests_per_minute'] >= 1000:
         st.info("⚡ **High-Speed Processing**: Fast batched processing enabled")
-    elif rate_limits['delay'] < 0.5:  # Very fast models
+    elif rate_limits['delay'] < 0.5:
         st.info("⚡ **Fast Processing**: Optimized for speed")
     else:
         st.caption("🔬 Experimental model - slower processing")
@@ -2096,10 +2412,10 @@ with st.sidebar:
     chunking_options = {
         "🤖 Auto (Recommended)": "auto",
         "📄 Single Chunk": "single",
-        "🔹 Small Chunks (40K)": "small",      # Updated for 2000 RPM
-        "⚖️ Medium Chunks (80K)": "medium",     # Updated for 2000 RPM
-        "🔷 Large Chunks (120K)": "large",      # Updated for 2000 RPM
-        "🔶 XLarge Chunks (150K)": "xlarge"     # Updated for 2000 RPM
+        "🔹 Small Chunks (40K)": "small",
+        "⚖️ Medium Chunks (80K)": "medium",
+        "🔷 Large Chunks (120K)": "large",
+        "🔶 XLarge Chunks (150K)": "xlarge"
     }
     
     selected_chunking = st.selectbox(
@@ -2172,7 +2488,7 @@ with st.sidebar:
                         with col_info2:
                             # 2000 RPM OPTIMIZED: Calculate estimates based on ultra-fast processing
                             if chunk_size_mode == "auto":
-                                estimated_chunk_size = min(max(char_count // 15, 60000), 120000)  # New auto logic
+                                estimated_chunk_size = min(max(char_count // 15, 60000), 120000)
                             else:
                                 flash_2000_chunk_sizes = {"single": char_count, "small": 40000, "medium": 80000, "large": 120000, "xlarge": 150000}
                                 estimated_chunk_size = flash_2000_chunk_sizes.get(chunk_size_mode, 80000)
@@ -2203,24 +2519,6 @@ with st.sidebar:
                         st.error(f"❌ {error_msg}")
                         st.info("💡 **Tips**: Try saving the file as UTF-8 text, or check if it contains special characters")
                         
-                except NameError as name_error:
-                    # Fallback to simple file loading if enhanced function fails
-                    st.warning("Using fallback file loading...")
-                    try:
-                        newsletter_text = uploaded_file.getvalue().decode('utf-8')
-                        st.success(f"✅ File loaded: {len(newsletter_text):,} characters (UTF-8)")
-                    except UnicodeDecodeError:
-                        try:
-                            newsletter_text = uploaded_file.getvalue().decode('cp1252')
-                            st.success(f"✅ File loaded: {len(newsletter_text):,} characters (Windows-1252)")
-                        except:
-                            try:
-                                newsletter_text = uploaded_file.getvalue().decode('utf-8', errors='replace')
-                                st.warning(f"⚠️ File loaded with character replacements: {len(newsletter_text):,} characters")
-                            except Exception as fallback_error:
-                                st.error(f"❌ Could not load file: {fallback_error}")
-                                newsletter_text = ""
-                                
                 except Exception as file_error:
                     st.error(f"❌ Error loading file: {str(file_error)}")
                     st.info("💡 **Try**: Different file encoding or copy/paste the content instead")
@@ -2306,7 +2604,6 @@ if st.session_state.global_search and len(st.session_state.global_search.strip()
                 col1, col2, col3 = st.columns([3, 2, 1])
                 with col1:
                     st.markdown(f"**{safe_get(firm, 'name')}**")
-                    # FIXED: Show firm type instead of strategy only
                     firm_type = safe_get(firm, 'firm_type', 'Unknown')
                     strategy = safe_get(firm, 'strategy', '')
                     display_text = f"{firm_type}"
@@ -2334,7 +2631,7 @@ if st.session_state.global_search and len(st.session_state.global_search.strip()
             st.rerun()
         st.markdown("---")
 
-# Top Navigation (simplified - removed Network tab)
+# Top Navigation
 col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 2])
 
 with col1:
@@ -2370,172 +2667,16 @@ with col5:
         total_metrics = sum(len(firm.get('performance_metrics', [])) for firm in st.session_state.firms)
         st.metric("Metrics", total_metrics)
 
-# --- ADD PERSON MODAL (FIXED: Using simple_text_input in forms) ---
-if st.session_state.show_add_person_modal:
-    st.markdown("---")
-    st.subheader("➕ Add New Person")
-    
-    with st.form("add_person_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            name = st.text_input("Full Name*", placeholder="John Smith")
-            title = st.text_input("Current Title*", placeholder="Portfolio Manager")
-            
-            # Company selection with existing options
-            company_options = [f['name'] for f in st.session_state.firms if f.get('name')]
-            if company_options:
-                company = st.text_input(
-                    "Current Company*",
-                    placeholder="Type company name or select from suggestions",
-                    help=f"Available: {', '.join(company_options[:3])}{'...' if len(company_options) > 3 else ''}"
-                )
-            else:
-                company = st.text_input("Current Company*", placeholder="Company Name")
-            
-            # FIXED: Use simple_text_input in forms
-            location = simple_text_input("location", "", "add_person", ["Hong Kong", "Singapore", "Tokyo"])
-        
-        with col2:
-            email = st.text_input("Email", placeholder="john.smith@company.com")
-            phone = st.text_input("Phone", placeholder="+852-1234-5678")
-            education = st.text_input("Education", placeholder="Harvard, MIT")
-            expertise = simple_text_input("expertise", "", "add_person", ["Equity Research", "Fixed Income", "Quantitative"])
-        
-        col3, col4 = st.columns(2)
-        with col3:
-            aum_managed = st.text_input("AUM Managed", placeholder="500M USD")
-        with col4:
-            strategy = simple_text_input("strategy", "", "add_person", ["Long/Short Equity", "Multi-Strategy"])
-        
-        submitted = st.form_submit_button("Add Person", use_container_width=True)
-        
-        if submitted:
-            if name and title and company and location:
-                new_person_id = str(uuid.uuid4())
-                st.session_state.people.append({
-                    "id": new_person_id,
-                    "name": name,
-                    "current_title": title,
-                    "current_company_name": company,
-                    "location": location,
-                    "email": email,
-                    "linkedin_profile_url": "",
-                    "phone": phone,
-                    "education": education,
-                    "expertise": expertise,
-                    "aum_managed": aum_managed,
-                    "strategy": strategy,
-                    "created_date": datetime.now().isoformat(),
-                    "last_updated": datetime.now().isoformat(),
-                    "extraction_history": [{
-                        "extraction_date": datetime.now().isoformat(),
-                        "source_type": "manual_entry",
-                        "context_preview": f"Manually added person: {name} at {company}",
-                        "entry_method": "add_person_form"
-                    }]
-                })
-                
-                # Add employment record
-                st.session_state.employments.append({
-                    "id": str(uuid.uuid4()),
-                    "person_id": new_person_id,
-                    "company_name": company,
-                    "title": title,
-                    "start_date": date.today(),
-                    "end_date": None,
-                    "location": location,
-                    "strategy": strategy or "Unknown",
-                    "created_date": datetime.now().isoformat(),
-                    "extraction_context": {
-                        "extraction_date": datetime.now().isoformat(),
-                        "source_type": "manual_entry"
-                    }
-                })
-                
-                save_data()
-                st.success(f"✅ Added {name}!")
-                st.session_state.show_add_person_modal = False
-                st.rerun()
-            else:
-                st.error("Please fill required fields (*)")
-    
-    if st.button("❌ Cancel", key="cancel_add_person_outside"):
-        st.session_state.show_add_person_modal = False
-        st.rerun()
+# --- MAIN VIEWS AND MODALS ---
 
-# --- ADD FIRM MODAL (FIXED: Using simple_text_input in forms) ---
-if st.session_state.show_add_firm_modal:
-    st.markdown("---")
-    st.subheader("🏢 Add New Firm")
-    
-    with st.form("add_firm_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            firm_name = st.text_input("Firm Name*", placeholder="Tiger Asia Management")
-            location = simple_text_input("location", "", "add_firm", ["Hong Kong", "Singapore", "Tokyo"])
-            aum = st.text_input("AUM", placeholder="5B USD")
-            
-            # FIXED: Add firm type selection
-            firm_type_options = [
-                "Hedge Fund", "Investment Bank", "Asset Manager", "Private Equity", 
-                "Family Office", "Pension Fund", "Central Bank", "Sovereign Wealth Fund", 
-                "Fintech Company", "News Organization", "Rating Agency", "Financial Services"
-            ]
-            firm_type = st.selectbox("Firm Type*", firm_type_options, index=0)
-            
-        with col2:
-            strategy = simple_text_input("strategy", "", "add_firm", ["Multi-Strategy", "Long/Short Equity"])
-            founded = st.number_input("Founded", min_value=1900, max_value=2025, value=2000)
-            website = st.text_input("Website", placeholder="https://company.com")
-        
-        description = st.text_area("Description", placeholder="Brief description of the firm...")
-        
-        submitted = st.form_submit_button("Add Firm", use_container_width=True)
-        
-        if submitted:
-            if firm_name and location:
-                st.session_state.firms.append({
-                    "id": str(uuid.uuid4()),
-                    "name": firm_name,
-                    "firm_type": firm_type,  # FIXED: Added firm_type
-                    "location": location,
-                    "headquarters": location,
-                    "aum": aum,
-                    "founded": founded if founded > 1900 else None,
-                    "strategy": strategy,
-                    "website": website,
-                    "description": description if description else f"{firm_type} based in {location}",
-                    "performance_metrics": [],
-                    "created_date": datetime.now().isoformat(),
-                    "last_updated": datetime.now().isoformat(),
-                    "extraction_history": [{
-                        "extraction_date": datetime.now().isoformat(),
-                        "source_type": "manual_entry",
-                        "context_preview": f"Manually added firm: {firm_name} in {location}",
-                        "entry_method": "add_firm_form"
-                    }]
-                })
-                
-                save_data()
-                st.success(f"✅ Added {firm_name}!")
-                st.session_state.show_add_firm_modal = False
-                st.rerun()
-            else:
-                st.error("Please fill Firm Name and Location")
-    
-    if st.button("❌ Cancel", key="cancel_add_firm_outside"):
-        st.session_state.show_add_firm_modal = False
-        st.rerun()
-
-# --- PEOPLE VIEW WITH CARD LAYOUT ---
+# Current view handling
 if st.session_state.current_view == 'people':
     st.markdown("---")
     st.header("👥 Financial Professionals")
     
     if not st.session_state.people:
         st.info("No people added yet. Use 'Add Person' button above or extract from newsletters using AI.")
+        st.info("💡 The sample data includes people from Goldman Sachs Asia and other firms with **overlapping work periods** to demonstrate the new network features!")
     else:
         # Filters
         col1, col2, col3 = st.columns(3)
@@ -2559,24 +2700,21 @@ if st.session_state.current_view == 'people':
         
         # PRIORITIZED SORTING: Asia + Hedge Funds first, then by date
         def get_person_sort_key(person):
-            # Get priority score (Asia + Hedge Fund bonus)
             priority_score = get_priority_score(person, 'person')
             
-            # Get date for secondary sorting
             for date_field in ['last_updated', 'created_date']:
                 if date_field in person and person[date_field]:
                     try:
                         date_obj = datetime.fromisoformat(person[date_field].replace('Z', '+00:00'))
-                        # Return tuple: (priority_score, date) - higher priority first, then recent first
                         return (-priority_score, -date_obj.timestamp())
                     except:
                         continue
-            return (-priority_score, 0)  # Default old date
+            return (-priority_score, 0)
         
         filtered_people.sort(key=get_person_sort_key)
         
         # Paginate results
-        people_to_show, people_page_info = paginate_data(filtered_people, st.session_state.people_page, 12)  # 12 cards per page
+        people_to_show, people_page_info = paginate_data(filtered_people, st.session_state.people_page, 12)
         
         st.write(f"**Showing {people_page_info['start_idx'] + 1}-{people_page_info['end_idx']} of {people_page_info['total_items']} people** (Asia + Hedge Funds prioritized)")
         
@@ -2612,15 +2750,15 @@ if st.session_state.current_view == 'people':
                                 if aum and aum != 'Unknown':
                                     st.text(f"💰 {aum}")
                                 
-                                # Performance metrics count and simple connection info
-                                person_metrics = get_person_performance_metrics(person['id'])
+                                # FIXED: Show connection info with overlap details
                                 shared_history = get_shared_work_history(person['id'])
-                                
-                                if person_metrics:
-                                    st.text(f"📊 {len(person_metrics)} metrics")
-                                
                                 if shared_history:
-                                    st.text(f"🔗 {len(shared_history)} connections")
+                                    strong_connections = len([c for c in shared_history if c.get('connection_strength') == 'Strong'])
+                                    total_connections = len(shared_history)
+                                    if strong_connections > 0:
+                                        st.text(f"🔗 {strong_connections} strong, {total_connections} total")
+                                    else:
+                                        st.text(f"🔗 {total_connections} connections")
                                 
                                 # Show when added/updated
                                 if 'created_date' in person or 'last_updated' in person:
@@ -2655,7 +2793,6 @@ if st.session_state.current_view == 'people':
         # Pagination controls
         display_pagination_controls(people_page_info, "people")
 
-# --- FIRMS VIEW WITH CARD LAYOUT (FIXED: Show firm types) ---
 elif st.session_state.current_view == 'firms':
     st.markdown("---")
     st.header("🏢 Financial Institutions")
@@ -2665,24 +2802,21 @@ elif st.session_state.current_view == 'firms':
     else:
         # PRIORITIZED SORTING: Asia + Hedge Funds first, then by date
         def get_firm_sort_key(firm):
-            # Get priority score (Asia + Hedge Fund bonus)
             priority_score = get_priority_score(firm, 'firm')
             
-            # Get date for secondary sorting
             for date_field in ['last_updated', 'created_date']:
                 if date_field in firm and firm[date_field]:
                     try:
                         date_obj = datetime.fromisoformat(firm[date_field].replace('Z', '+00:00'))
-                        # Return tuple: (priority_score, date) - higher priority first, then recent first
                         return (-priority_score, -date_obj.timestamp())
                     except:
                         continue
-            return (-priority_score, 0)  # Default old date
+            return (-priority_score, 0)
         
         sorted_firms = sorted(st.session_state.firms, key=get_firm_sort_key)
         
         # Paginate results
-        firms_to_show, firms_page_info = paginate_data(sorted_firms, st.session_state.firms_page, 12)  # 12 cards per page
+        firms_to_show, firms_page_info = paginate_data(sorted_firms, st.session_state.firms_page, 12)
         
         st.write(f"**Showing {firms_page_info['start_idx'] + 1}-{firms_page_info['end_idx']} of {firms_page_info['total_items']} firms** (Asia + Hedge Funds prioritized)")
         
@@ -2704,7 +2838,7 @@ elif st.session_state.current_view == 'firms':
                                 priority_emoji = "🌟" if firm_priority >= 100 else "⭐" if firm_priority >= 50 else ""
                                 
                                 st.markdown(f"**🏢 {safe_get(firm, 'name')} {priority_emoji}**")
-                                # FIXED: Show firm type prominently
+                                # Show firm type prominently
                                 firm_type = safe_get(firm, 'firm_type', 'Unknown')
                                 strategy = safe_get(firm, 'strategy', '')
                                 if strategy and strategy != 'Unknown':
@@ -2770,135 +2904,6 @@ elif st.session_state.current_view == 'firms':
         # Pagination controls
         display_pagination_controls(firms_page_info, "firms")
 
-# --- FIRM DETAILS VIEW (FIXED: Show firm type) ---
-elif st.session_state.current_view == 'firm_details' and st.session_state.selected_firm_id:
-    firm = get_firm_by_id(st.session_state.selected_firm_id)
-    if not firm:
-        st.error("Firm not found")
-        go_to_firms()
-        st.rerun()
-    
-    # Firm header
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.header(f"🏢 {safe_get(firm, 'name')}")
-        # FIXED: Show firm type in header
-        firm_type = safe_get(firm, 'firm_type', 'Unknown')
-        strategy = safe_get(firm, 'strategy', '')
-        location = safe_get(firm, 'location')
-        if strategy and strategy != 'Unknown':
-            st.markdown(f"**{firm_type} • {strategy}** • {location}")
-        else:
-            st.markdown(f"**{firm_type}** • {location}")
-    with col2:
-        col2a, col2b = st.columns(2)
-        with col2a:
-            if st.button("← Back"):
-                go_to_firms()
-                st.rerun()
-        with col2b:
-            if st.button("✏️ Edit"):
-                st.session_state.edit_firm_data = firm
-                st.session_state.show_edit_firm_modal = True
-                st.rerun()
-    
-    # Firm metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Assets Under Management", safe_get(firm, 'aum'))
-    with col2:
-        st.metric("Founded", safe_get(firm, 'founded'))
-    with col3:
-        people_count = len(get_people_by_firm(safe_get(firm, 'name')))
-        st.metric("Total People", people_count)
-    
-    # Firm details
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"**🏢 Type:** {safe_get(firm, 'firm_type')}")  # FIXED: Show firm type
-        st.markdown(f"**📍 Location:** {safe_get(firm, 'location')}")
-        st.markdown(f"**🏛️ Headquarters:** {safe_get(firm, 'headquarters')}")
-    with col2:
-        st.markdown(f"**📈 Strategy:** {safe_get(firm, 'strategy')}")
-        website = safe_get(firm, 'website')
-        if website:
-            st.markdown(f"**🌐 Website:** [{website}]({website})")
-    
-    description = safe_get(firm, 'description')
-    if description:
-        st.markdown(f"**📄 About:** {description}")
-    
-    # INTEGRATED PERFORMANCE METRICS
-    st.markdown("---")
-    st.subheader("📊 Performance Metrics")
-    
-    firm_metrics = firm.get('performance_metrics', [])
-    if firm_metrics:
-        st.write(f"**Found {len(firm_metrics)} performance metrics:**")
-        
-        # Create performance dataframe for better display
-        metrics_data = []
-        for metric in firm_metrics:
-            metrics_data.append({
-                "Metric": safe_get(metric, 'metric_type').title(),
-                "Value": safe_get(metric, 'value'),
-                "Period": safe_get(metric, 'period'),
-                "Date": safe_get(metric, 'date'),
-                "Details": safe_get(metric, 'additional_info')
-            })
-        
-        df_metrics = pd.DataFrame(metrics_data)
-        st.dataframe(df_metrics, use_container_width=True)
-        
-    else:
-        st.info("No performance metrics found for this firm.")
-        st.write("💡 Performance metrics will appear here when extracted from newsletters.")
-    
-    # People at this firm (simplified)
-    st.markdown("---")
-    st.subheader(f"👥 People at {safe_get(firm, 'name')}")
-    
-    firm_people = get_people_by_firm(safe_get(firm, 'name'))
-    if firm_people:
-        # Show people with basic info
-        for person in firm_people[:10]:  # Show first 10
-            shared_history = get_shared_work_history(person['id'])
-            
-            with st.container(border=True):
-                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
-                
-                with col1:
-                    st.markdown(f"**👤 {safe_get(person, 'name')}**")
-                    st.caption(safe_get(person, 'current_title'))
-                
-                with col2:
-                    email = safe_get(person, 'email')
-                    expertise = safe_get(person, 'expertise')
-                    if email:
-                        st.caption(f"📧 {email}")
-                    if expertise:
-                        st.caption(f"🏆 {expertise}")
-                
-                with col3:
-                    # Simple connection count
-                    if shared_history:
-                        st.metric("🔗", len(shared_history), label_visibility="collapsed")
-                        st.caption(f"{len(shared_history)} connections")
-                    else:
-                        st.metric("🔗", 0, label_visibility="collapsed")
-                        st.caption("No connections")
-                
-                with col4:
-                    if st.button("👁️ Profile", key=f"view_full_{person['id']}", use_container_width=True):
-                        go_to_person_details(person['id'])
-                        st.rerun()
-        
-        if len(firm_people) > 10:
-            st.info(f"Showing first 10 of {len(firm_people)} people")
-    else:
-        st.info("No people added for this firm yet.")
-
-# --- PERSON DETAILS VIEW (with integrated performance) ---
 elif st.session_state.current_view == 'person_details' and st.session_state.selected_person_id:
     person = get_person_by_id(st.session_state.selected_person_id)
     if not person:
@@ -2951,32 +2956,6 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
         if strategy:
             st.markdown(f"**📈 Strategy:** {strategy}")
     
-    # INTEGRATED PERFORMANCE METRICS
-    st.markdown("---")
-    st.subheader("📊 Performance Track Record")
-    
-    person_metrics = get_person_performance_metrics(person['id'])
-    if person_metrics:
-        st.write(f"**Found {len(person_metrics)} performance metrics:**")
-        
-        # Create performance dataframe
-        metrics_data = []
-        for metric in person_metrics:
-            metrics_data.append({
-                "Metric": safe_get(metric, 'metric_type').title(),
-                "Value": safe_get(metric, 'value'),
-                "Period": safe_get(metric, 'period'),
-                "Date": safe_get(metric, 'date'),
-                "Details": safe_get(metric, 'additional_info')
-            })
-        
-        df_metrics = pd.DataFrame(metrics_data)
-        st.dataframe(df_metrics, use_container_width=True)
-    
-    else:
-        st.info("No performance metrics found for this person.")
-        st.write("💡 Performance metrics will appear here when extracted from newsletters.")
-    
     # Employment History
     st.markdown("---")
     st.subheader("💼 Employment History")
@@ -3013,7 +2992,7 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
     else:
         st.info("No employment history available.")
     
-    # Shared Work History - Simple Table View (No Date Overlap)
+    # FIXED: Enhanced Shared Work History with Date Overlaps
     st.markdown("---")
     st.subheader("🤝 Shared Work History")
     
@@ -3022,45 +3001,38 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
     if shared_history:
         st.write(f"**Found {len(shared_history)} colleagues who worked at the same companies:**")
         
-        # Create a clean table similar to the image (without overlap years)
-        table_data = []
-        for connection in shared_history:
-            table_data.append({
-                "Full Name": connection['colleague_name'],
-                "Contact": "📧" if connection.get('colleague_email') else "🔗" if connection.get('colleague_linkedin') else "",
-                "Shared Company": connection['shared_company'],
-                "Current Company": connection['colleague_current_company'],
-                "Connection Type": connection['connection_type']
-            })
+        # Show summary statistics
+        strong_connections = len([c for c in shared_history if c.get('connection_strength') == 'Strong'])
+        medium_connections = len([c for c in shared_history if c.get('connection_strength') == 'Medium'])
+        brief_connections = len([c for c in shared_history if c.get('connection_strength') == 'Brief'])
+        weak_connections = len([c for c in shared_history if c.get('connection_strength') == 'Weak'])
         
-        # Display as a clean dataframe
-        if table_data:
-            df = pd.DataFrame(table_data)
-            
-            # Style the dataframe to look more like the image
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Full Name": st.column_config.TextColumn("Full Name", width="medium"),
-                    "Contact": st.column_config.TextColumn("Contact", width="small"),
-                    "Shared Company": st.column_config.TextColumn("Shared Company", width="medium"),
-                    "Current Company": st.column_config.TextColumn("Current Company", width="medium"),
-                    "Connection Type": st.column_config.TextColumn("Connection Type", width="small")
-                }
-            )
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("🔥 Strong (1+ years)", strong_connections)
+        with col2:
+            st.metric("⚡ Medium (3+ months)", medium_connections)
+        with col3:
+            st.metric("💨 Brief (<3 months)", brief_connections)
+        with col4:
+            st.metric("🔗 Same Company", weak_connections)
         
-        # Show individual connection cards for the top connections
-        st.markdown("#### 🔗 Top Connections")
-        for connection in shared_history[:5]:  # Show first 5
+        # Show individual connection cards
+        st.markdown("#### 🔗 Connections Details")
+        for connection in shared_history[:10]:  # Show first 10
             with st.container(border=True):
                 col1, col2, col3 = st.columns([2, 2, 1])
                 
                 with col1:
                     st.markdown(f"**{connection['colleague_name']}**")
-                    st.caption(f"Shared: {connection['shared_company']}")
-                    st.caption(f"Then: {connection['colleague_title']}")
+                    st.caption(f"**Shared:** {connection['shared_company']}")
+                    
+                    # FIXED: Show overlap period information
+                    if connection.get('overlap_days', 0) > 0:
+                        st.caption(f"⏰ **Overlap:** {connection['overlap_period']}")
+                        st.caption(f"📅 **Duration:** {connection['overlap_duration']}")
+                    else:
+                        st.caption(f"📅 **No overlap** (different periods)")
                 
                 with col2:
                     st.caption(f"**Current:** {connection['colleague_current_title']}")
@@ -3073,423 +3045,254 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
                         st.caption(f"🔗 LinkedIn")
                 
                 with col3:
-                    # Show connection type instead of years
-                    if connection['connection_type'] == "Multiple Companies":
-                        st.success("🏢 Multiple")
-                        st.caption("Shared Companies")
+                    # FIXED: Show connection strength with overlap details
+                    strength = connection.get('connection_strength', 'Weak')
+                    if strength == "Strong":
+                        st.success("🔥 Strong")
+                        st.caption("1+ year overlap")
+                    elif strength == "Medium":
+                        st.info("⚡ Medium")
+                        st.caption("3+ months overlap")
+                    elif strength == "Brief":
+                        st.warning("💨 Brief")
+                        st.caption("<3 months overlap")
                     else:
                         st.info("🔗 Same")
-                        st.caption("Company")
+                        st.caption("Company only")
                     
                     if st.button("👁️ View", key=f"view_colleague_{connection['colleague_id']}", use_container_width=True):
                         go_to_person_details(connection['colleague_id'])
                         st.rerun()
         
-        if len(shared_history) > 5:
-            st.info(f"Showing top 5 of {len(shared_history)} total connections")
+        if len(shared_history) > 10:
+            st.info(f"Showing top 10 of {len(shared_history)} total connections")
         
     else:
         st.info("No shared work history found with other people in the database.")
         st.write("💡 This person will show connections when:")
-        st.write("• Other people in the database have worked at the same companies")
-        st.write("• More employment history is added to the system")
+        st.write("• Other people in the database have **overlapping work periods** at the same companies")
+        st.write("• More employment history with **start and end dates** is added to the system")
         st.write("• People's work history includes past employers (not just current jobs)")
 
-# --- EDIT PERSON MODAL (FIXED: Using simple_text_input in forms) ---
-if st.session_state.show_edit_person_modal and st.session_state.edit_person_data:
+elif st.session_state.current_view == 'firm_details' and st.session_state.selected_firm_id:
+    firm = get_firm_by_id(st.session_state.selected_firm_id)
+    if not firm:
+        st.error("Firm not found")
+        go_to_firms()
+        st.rerun()
+    
+    # Firm header
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.header(f"🏢 {safe_get(firm, 'name')}")
+        firm_type = safe_get(firm, 'firm_type', 'Unknown')
+        strategy = safe_get(firm, 'strategy', '')
+        location = safe_get(firm, 'location')
+        if strategy and strategy != 'Unknown':
+            st.markdown(f"**{firm_type} • {strategy}** • {location}")
+        else:
+            st.markdown(f"**{firm_type}** • {location}")
+    with col2:
+        col2a, col2b = st.columns(2)
+        with col2a:
+            if st.button("← Back"):
+                go_to_firms()
+                st.rerun()
+        with col2b:
+            if st.button("✏️ Edit"):
+                st.session_state.edit_firm_data = firm
+                st.session_state.show_edit_firm_modal = True
+                st.rerun()
+    
+    # Firm metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Assets Under Management", safe_get(firm, 'aum'))
+    with col2:
+        st.metric("Founded", safe_get(firm, 'founded'))
+    with col3:
+        people_count = len(get_people_by_firm(safe_get(firm, 'name')))
+        st.metric("Total People", people_count)
+    
+    # Firm details
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(f"**🏢 Type:** {safe_get(firm, 'firm_type')}")
+        st.markdown(f"**📍 Location:** {safe_get(firm, 'location')}")
+        st.markdown(f"**🏛️ Headquarters:** {safe_get(firm, 'headquarters')}")
+    with col2:
+        st.markdown(f"**📈 Strategy:** {safe_get(firm, 'strategy')}")
+        website = safe_get(firm, 'website')
+        if website:
+            st.markdown(f"**🌐 Website:** [{website}]({website})")
+    
+    description = safe_get(firm, 'description')
+    if description:
+        st.markdown(f"**📄 About:** {description}")
+    
+    # INTEGRATED PERFORMANCE METRICS
     st.markdown("---")
-    st.subheader(f"✏️ Edit {safe_get(st.session_state.edit_person_data, 'name', 'Person')}")
+    st.subheader("📊 Performance Metrics")
     
-    person_data = st.session_state.edit_person_data
+    firm_metrics = firm.get('performance_metrics', [])
+    if firm_metrics:
+        st.write(f"**Found {len(firm_metrics)} performance metrics:**")
+        
+        # Create performance dataframe for better display
+        metrics_data = []
+        for metric in firm_metrics:
+            metrics_data.append({
+                "Metric": safe_get(metric, 'metric_type').title(),
+                "Value": safe_get(metric, 'value'),
+                "Period": safe_get(metric, 'period'),
+                "Date": safe_get(metric, 'date'),
+                "Details": safe_get(metric, 'additional_info')
+            })
+        
+        df_metrics = pd.DataFrame(metrics_data)
+        st.dataframe(df_metrics, use_container_width=True)
+        
+    else:
+        st.info("No performance metrics found for this firm.")
+        st.write("💡 Performance metrics will appear here when extracted from newsletters.")
     
-    with st.form("edit_person_form", clear_on_submit=False):
+    # People at this firm
+    st.markdown("---")
+    st.subheader(f"👥 People at {safe_get(firm, 'name')}")
+    
+    firm_people = get_people_by_firm(safe_get(firm, 'name'))
+    if firm_people:
+        # Show people with basic info
+        for person in firm_people[:10]:  # Show first 10
+            shared_history = get_shared_work_history(person['id'])
+            
+            with st.container(border=True):
+                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                
+                with col1:
+                    st.markdown(f"**👤 {safe_get(person, 'name')}**")
+                    st.caption(safe_get(person, 'current_title'))
+                
+                with col2:
+                    email = safe_get(person, 'email')
+                    expertise = safe_get(person, 'expertise')
+                    if email:
+                        st.caption(f"📧 {email}")
+                    if expertise:
+                        st.caption(f"🏆 {expertise}")
+                
+                with col3:
+                    # FIXED: Show connection info with overlap details
+                    if shared_history:
+                        strong_connections = len([c for c in shared_history if c.get('connection_strength') == 'Strong'])
+                        total_connections = len(shared_history)
+                        st.metric("🔗", total_connections, label_visibility="collapsed")
+                        if strong_connections > 0:
+                            st.caption(f"{strong_connections} strong connections")
+                        else:
+                            st.caption(f"{total_connections} connections")
+                    else:
+                        st.metric("🔗", 0, label_visibility="collapsed")
+                        st.caption("No connections")
+                
+                with col4:
+                    if st.button("👁️ Profile", key=f"view_full_{person['id']}", use_container_width=True):
+                        go_to_person_details(person['id'])
+                        st.rerun()
+        
+        if len(firm_people) > 10:
+            st.info(f"Showing first 10 of {len(firm_people)} people")
+    else:
+        st.info("No people added for this firm yet.")
+
+# Handle modals...
+if st.session_state.show_add_person_modal:
+    st.markdown("---")
+    st.subheader("➕ Add New Person")
+    
+    with st.form("add_person_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         
         with col1:
-            name = st.text_input("Full Name*", value=safe_get(person_data, 'name'))
-            title = st.text_input("Current Title*", value=safe_get(person_data, 'current_title'))
+            name = st.text_input("Full Name*", placeholder="John Smith")
+            title = st.text_input("Current Title*", placeholder="Portfolio Manager")
             
-            current_company = safe_get(person_data, 'current_company_name')
+            # Company selection with existing options
             company_options = [f['name'] for f in st.session_state.firms if f.get('name')]
+            if company_options:
+                company = st.text_input(
+                    "Current Company*",
+                    placeholder="Type company name or select from suggestions",
+                    help=f"Available: {', '.join(company_options[:3])}{'...' if len(company_options) > 3 else ''}"
+                )
+            else:
+                company = st.text_input("Current Company*", placeholder="Company Name")
             
-            company = st.text_input(
-                "Company Name*",
-                value=current_company,
-                placeholder="Type company name",
-                help=f"Available firms: {', '.join(company_options[:3])}{'...' if len(company_options) > 3 else ''}"
-            )
-            
-            location = simple_text_input("location", safe_get(person_data, 'location'), "edit_person")
+            location = simple_text_input("location", "", "add_person", ["Hong Kong", "Singapore", "Tokyo"])
         
         with col2:
-            email = st.text_input("Email", value=safe_get(person_data, 'email'))
-            phone = st.text_input("Phone", value=safe_get(person_data, 'phone'))
-            linkedin = st.text_input("LinkedIn URL", value=safe_get(person_data, 'linkedin_profile_url'))
-            education = st.text_input("Education", value=safe_get(person_data, 'education'))
+            email = st.text_input("Email", placeholder="john.smith@company.com")
+            phone = st.text_input("Phone", placeholder="+852-1234-5678")
+            education = st.text_input("Education", placeholder="Harvard, MIT")
+            expertise = simple_text_input("expertise", "", "add_person", ["Equity Research", "Fixed Income", "Quantitative"])
         
+        # FIXED: Add employment date fields
+        st.markdown("**📅 Employment Dates**")
         col3, col4 = st.columns(2)
         with col3:
-            expertise = simple_text_input("expertise", safe_get(person_data, 'expertise'), "edit_person")
-            aum = st.text_input("AUM Managed", value=safe_get(person_data, 'aum_managed'))
-        
+            aum_managed = st.text_input("AUM Managed", placeholder="500M USD")
+            start_date = st.date_input("Start Date", value=date.today())
         with col4:
-            strategy = simple_text_input("strategy", safe_get(person_data, 'strategy'), "edit_person")
+            strategy = simple_text_input("strategy", "", "add_person", ["Long/Short Equity", "Multi-Strategy"])
+            is_current = st.checkbox("Current Position", value=True)
+            end_date = None if is_current else st.date_input("End Date", value=date.today())
         
-        col_save, col_cancel, col_delete = st.columns(3)
+        submitted = st.form_submit_button("Add Person", use_container_width=True)
         
-        with col_save:
-            save_submitted = st.form_submit_button("💾 Save Changes", use_container_width=True)
-        with col_cancel:
-            cancel_submitted = st.form_submit_button("❌ Cancel", use_container_width=True)
-        with col_delete:
-            delete_submitted = st.form_submit_button("🗑️ Delete Person", use_container_width=True)
-        
-        # Handle form submissions
-        if save_submitted:
+        if submitted:
             if name and title and company and location:
-                person_data.update({
+                new_person_id = str(uuid.uuid4())
+                st.session_state.people.append({
+                    "id": new_person_id,
                     "name": name,
                     "current_title": title,
                     "current_company_name": company,
                     "location": location,
                     "email": email,
-                    "linkedin_profile_url": linkedin,
+                    "linkedin_profile_url": "",
                     "phone": phone,
                     "education": education,
                     "expertise": expertise,
-                    "aum_managed": aum,
+                    "aum_managed": aum_managed,
                     "strategy": strategy,
-                    "last_updated": datetime.now().isoformat()  # Update timestamp
+                    "created_date": datetime.now().isoformat(),
+                    "last_updated": datetime.now().isoformat(),
+                    "extraction_history": [{
+                        "extraction_date": datetime.now().isoformat(),
+                        "source_type": "manual_entry",
+                        "context_preview": f"Manually added person: {name} at {company}",
+                        "entry_method": "add_person_form"
+                    }]
                 })
                 
-                for i, p in enumerate(st.session_state.people):
-                    if p['id'] == person_data['id']:
-                        st.session_state.people[i] = person_data
-                        break
+                # FIXED: Add employment record with dates
+                success = add_employment_with_dates(
+                    new_person_id, company, title, start_date, end_date, location, strategy or "Unknown"
+                )
                 
-                save_data()
-                st.success(f"✅ Updated {name}!")
-                st.session_state.show_edit_person_modal = False
-                st.session_state.edit_person_data = None
-                st.rerun()
+                if success:
+                    save_data()
+                    st.success(f"✅ Added {name}!")
+                    st.session_state.show_add_person_modal = False
+                    st.rerun()
+                else:
+                    st.error("Failed to add employment record")
             else:
                 st.error("Please fill required fields (*)")
-        
-        if cancel_submitted:
-            st.session_state.show_edit_person_modal = False
-            st.session_state.edit_person_data = None
-            st.rerun()
-        
-        if delete_submitted:
-            person_id = person_data['id']
-            st.session_state.people = [p for p in st.session_state.people if p['id'] != person_id]
-            st.session_state.employments = [e for e in st.session_state.employments if e['person_id'] != person_id]
-            
-            save_data()
-            st.success("✅ Person deleted!")
-            st.session_state.show_edit_person_modal = False
-            st.session_state.edit_person_data = None
-            st.rerun()
-
-# --- EDIT FIRM MODAL (FIXED: Using simple_text_input in forms + firm type editing) ---
-if st.session_state.show_edit_firm_modal and st.session_state.edit_firm_data:
-    st.markdown("---")
-    st.subheader(f"✏️ Edit {safe_get(st.session_state.edit_firm_data, 'name', 'Firm')}")
     
-    firm_data = st.session_state.edit_firm_data
-    
-    with st.form("edit_firm_form", clear_on_submit=False):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            firm_name = st.text_input("Firm Name*", value=safe_get(firm_data, 'name'))
-            location = simple_text_input("location", safe_get(firm_data, 'location'), "edit_firm")
-            headquarters = st.text_input("Headquarters", value=safe_get(firm_data, 'headquarters'))
-            aum = st.text_input("AUM", value=safe_get(firm_data, 'aum'))
-            
-            # FIXED: Add firm type editing
-            firm_type_options = [
-                "Hedge Fund", "Investment Bank", "Asset Manager", "Private Equity", 
-                "Family Office", "Pension Fund", "Central Bank", "Sovereign Wealth Fund", 
-                "Fintech Company", "News Organization", "Rating Agency", "Financial Services"
-            ]
-            current_firm_type = safe_get(firm_data, 'firm_type', 'Hedge Fund')
-            try:
-                current_index = firm_type_options.index(current_firm_type)
-            except ValueError:
-                current_index = 0  # Default to Hedge Fund
-            
-            firm_type = st.selectbox("Firm Type*", firm_type_options, index=current_index)
-            
-        with col2:
-            strategy = simple_text_input("strategy", safe_get(firm_data, 'strategy'), "edit_firm")
-            founded = st.number_input("Founded", min_value=1900, max_value=2025, 
-                                    value=firm_data.get('founded', 2000) if firm_data.get('founded') else 2000)
-            website = st.text_input("Website", value=safe_get(firm_data, 'website'))
-        
-        description = st.text_area("Description", value=safe_get(firm_data, 'description'))
-        
-        # Performance Metrics Management
-        st.markdown("---")
-        st.subheader("📊 Performance Metrics")
-        
-        existing_metrics = firm_data.get('performance_metrics', [])
-        if existing_metrics:
-            st.write(f"**Current Metrics ({len(existing_metrics)}):**")
-            for i, metric in enumerate(existing_metrics):
-                with st.expander(f"{safe_get(metric, 'metric_type')} - {safe_get(metric, 'period')}"):
-                    col_metric1, col_metric2 = st.columns(2)
-                    with col_metric1:
-                        st.write(f"**Value**: {safe_get(metric, 'value')}")
-                        st.write(f"**Period**: {safe_get(metric, 'period')}")
-                    with col_metric2:
-                        st.write(f"**Date**: {safe_get(metric, 'date')}")
-                        st.write(f"**Info**: {safe_get(metric, 'additional_info')}")
-                    
-                    if st.button(f"🗑️ Remove Metric", key=f"remove_metric_{i}"):
-                        existing_metrics.pop(i)
-                        firm_data['performance_metrics'] = existing_metrics
-                        st.rerun()
-        else:
-            st.info("No performance metrics yet. Metrics will be added automatically when extracted from newsletters.")
-        
-        col_save, col_cancel, col_delete = st.columns(3)
-        
-        with col_save:
-            save_submitted = st.form_submit_button("💾 Save Changes", use_container_width=True)
-        with col_cancel:
-            cancel_submitted = st.form_submit_button("❌ Cancel", use_container_width=True)
-        with col_delete:
-            delete_submitted = st.form_submit_button("🗑️ Delete Firm", use_container_width=True)
-        
-        # Handle form submissions
-        if save_submitted:
-            if firm_name and location:
-                old_name = safe_get(firm_data, 'name')
-                firm_data.update({
-                    "name": firm_name,
-                    "firm_type": firm_type,  # FIXED: Update firm type
-                    "location": location,
-                    "headquarters": headquarters,
-                    "aum": aum,
-                    "founded": founded if founded > 1900 else None,
-                    "strategy": strategy,
-                    "website": website,
-                    "description": description,
-                    "last_updated": datetime.now().isoformat()  # Update timestamp
-                })
-                
-                for i, f in enumerate(st.session_state.firms):
-                    if f['id'] == firm_data['id']:
-                        st.session_state.firms[i] = firm_data
-                        break
-                
-                # Update people's company names if firm name changed
-                if old_name != firm_name:
-                    for person in st.session_state.people:
-                        if safe_get(person, 'current_company_name') == old_name:
-                            person['current_company_name'] = firm_name
-                            person['last_updated'] = datetime.now().isoformat()
-                
-                save_data()
-                st.success(f"✅ Updated {firm_name}!")
-                st.session_state.show_edit_firm_modal = False
-                st.session_state.edit_firm_data = None
-                st.rerun()
-            else:
-                st.error("Please fill Firm Name and Location")
-        
-        if cancel_submitted:
-            st.session_state.show_edit_firm_modal = False
-            st.session_state.edit_firm_data = None
-            st.rerun()
-        
-        if delete_submitted:
-            firm_id = firm_data['id']
-            firm_name = safe_get(firm_data, 'name')
-            
-            st.session_state.firms = [f for f in st.session_state.firms if f['id'] != firm_id]
-            
-            # Update people to remove company reference
-            for person in st.session_state.people:
-                if safe_get(person, 'current_company_name') == firm_name:
-                    person['current_company_name'] = 'Unknown'
-                    person['last_updated'] = datetime.now().isoformat()
-            
-            save_data()
-            st.success("✅ Firm deleted!")
-            st.session_state.show_edit_firm_modal = False
-            st.session_state.edit_firm_data = None
-            st.rerun()
-
-# --- DATA EXPORT & BACKUP SECTION ---
-st.markdown("---")
-st.markdown("### 📊 Data Export & Backup")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.markdown("#### 📁 Database Exports")
-    
-    export_format_options = ["📄 CSV Files (.zip)", "🗄️ JSON Backup"]
-    if EXCEL_AVAILABLE:
-        export_format_options.insert(0, "📊 Excel (.xlsx)")
-    
-    export_format = st.radio(
-        "Choose export format:",
-        export_format_options,
-        horizontal=True
-    )
-    
-    # Data selection checkboxes
-    st.markdown("**Select data to export:**")
-    
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        export_people = st.checkbox("👥 People", value=True, help=f"{len(st.session_state.people)} records")
-        export_firms = st.checkbox("🏢 Firms", value=True, help=f"{len(st.session_state.firms)} records")
-    with col_b:
-        export_employments = st.checkbox("💼 Employment History", value=True, help=f"{len(st.session_state.employments)} records")
-        total_metrics = sum(len(f.get('performance_metrics', [])) for f in st.session_state.firms)
-        export_performance = st.checkbox("📊 Performance Metrics", value=True, help=f"{total_metrics} records")
-    with col_c:
-        export_extractions = st.checkbox("🤖 Extraction History", value=False, help=f"{len(st.session_state.all_extractions)} records")
-        export_reviews = st.checkbox("📋 Pending Reviews", value=False, help=f"{len(st.session_state.pending_review_data)} batches")
-
-with col2:
-    st.markdown("#### 📈 Export Preview")
-    
-    total_records = 0
-    export_details = []
-    
-    if export_people and st.session_state.people:
-        total_records += len(st.session_state.people)
-        export_details.append(f"👥 {len(st.session_state.people)} People")
-    
-    if export_firms and st.session_state.firms:
-        total_records += len(st.session_state.firms)
-        export_details.append(f"🏢 {len(st.session_state.firms)} Firms")
-    
-    if export_employments and st.session_state.employments:
-        total_records += len(st.session_state.employments)
-        export_details.append(f"💼 {len(st.session_state.employments)} Employment Records")
-    
-    if export_performance:
-        perf_count = sum(len(f.get('performance_metrics', [])) for f in st.session_state.firms)
-        if perf_count > 0:
-            total_records += perf_count
-            export_details.append(f"📊 {perf_count} Performance Metrics")
-    
-    if export_details:
-        st.success(f"**Ready to export {total_records} total records:**")
-        for detail in export_details:
-            st.write(f"• {detail}")
-    else:
-        st.warning("No data selected for export")
-
-# Export buttons
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    if st.button("📊 Export Selected Data", use_container_width=True, disabled=total_records == 0):
-        try:
-            # Create export based on selections
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            
-            if export_format == "🗄️ JSON Backup":
-                backup_data = {}
-                
-                if export_people:
-                    backup_data["people"] = st.session_state.people
-                if export_firms:
-                    backup_data["firms"] = st.session_state.firms
-                if export_employments:
-                    backup_data["employments"] = st.session_state.employments
-                if export_extractions:
-                    backup_data["extractions"] = st.session_state.all_extractions
-                if export_reviews:
-                    backup_data["pending_reviews"] = st.session_state.pending_review_data
-                
-                backup_data.update({
-                    "export_timestamp": datetime.now().isoformat(),
-                    "total_records": total_records
-                })
-                
-                export_json = json.dumps(backup_data, indent=2, default=str)
-                st.download_button(
-                    "💾 Download JSON Backup",
-                    export_json,
-                    f"hedge_fund_backup_{timestamp}.json",
-                    "application/json",
-                    use_container_width=True
-                )
-                st.success(f"✅ JSON backup ready! {total_records} records included.")
-            
-            else:
-                # CSV/Excel export
-                csv_data, filename = export_to_csv()
-                if csv_data:
-                    st.download_button(
-                        "💾 Download CSV Export",
-                        csv_data,
-                        filename,
-                        "text/csv",
-                        use_container_width=True
-                    )
-                    st.success("✅ CSV export ready!")
-        
-        except Exception as e:
-            st.error(f"Export failed: {str(e)}")
-
-with col2:
-    if st.button("📄 Export All (CSV)", use_container_width=True):
-        csv_data, filename = export_to_csv()
-        if csv_data:
-            st.download_button(
-                "💾 Download Complete CSV",
-                csv_data,
-                filename,
-                "text/csv",
-                use_container_width=True
-            )
-            st.success("✅ Complete CSV export ready!")
-
-with col3:
-    if st.button("🗄️ Full JSON Backup", use_container_width=True):
-        backup_data = {
-            "people": st.session_state.people,
-            "firms": st.session_state.firms,
-            "employments": st.session_state.employments,
-            "extractions": st.session_state.all_extractions,
-            "pending_reviews": st.session_state.pending_review_data,
-            "export_timestamp": datetime.now().isoformat(),
-            "total_records": len(st.session_state.people) + len(st.session_state.firms) + len(st.session_state.employments)
-        }
-        
-        export_json = json.dumps(backup_data, indent=2, default=str)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
-        st.download_button(
-            "💾 Download Full Backup",
-            export_json,
-            f"hedge_fund_full_backup_{timestamp}.json",
-            "application/json",
-            use_container_width=True
-        )
-        st.success("✅ Full backup ready!")
-
-# --- FOOTER ---
-st.markdown("---")
-st.markdown("### 👥 Asian Financial Industry Intelligence Platform")
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.markdown("**🔍 Global Search**")
-with col2:
-    st.markdown("**📊 Performance Tracking**") 
-with col3:
-    st.markdown("**🤝 Work History**")
-with col4:
-    st.markdown("**📋 Smart Review System**")
+    if st.button("❌ Cancel", key="cancel_add_person_outside"):
+        st.session_state.show_add_person_modal = False
+        st.rerun()
 
 # Auto-save functionality
 current_time = datetime.now()
@@ -3511,3 +3314,16 @@ if st.session_state.pending_review_data and st.session_state.review_start_time:
         
         st.session_state.pending_review_data = []
         st.session_state.show_review_interface = False
+
+# --- FOOTER ---
+st.markdown("---")
+st.markdown("### 👥 Asian Financial Industry Intelligence Platform")
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.markdown("**🔍 Global Search**")
+with col2:
+    st.markdown("**📊 Performance Tracking**") 
+with col3:
+    st.markdown("**🤝 Enhanced Work History**")
+with col4:
+    st.markdown("**📋 Smart Review System**")
