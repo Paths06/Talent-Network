@@ -252,13 +252,13 @@ def check_and_recover_stuck_processing():
         if not bg_proc['is_running']:
             return False
         
-        # Check for timeout - TIER 1 OPTIMIZED
+        # Check for timeout - 2000 RPM OPTIMIZED
         if 'last_activity' in bg_proc and bg_proc['last_activity']:
             time_since_activity = (datetime.now() - bg_proc['last_activity']).total_seconds()
             
-            # TIER 1: Reduced timeout from 5 minutes to 2 minutes
-            if time_since_activity > 120:  # 2 minutes timeout for Tier 1
-                logger.warning(f"Tier 1 processing timeout detected after {time_since_activity}s inactivity")
+            # 2000 RPM: Reduced timeout from 2 minutes to 90 seconds
+            if time_since_activity > 90:  # 90 seconds timeout for 2000 RPM
+                logger.warning(f"2000 RPM processing timeout detected after {time_since_activity}s inactivity")
                 
                 # Force stop and save any results
                 total_people = bg_proc.get('saved_people', 0) + len(bg_proc['results']['people'])
@@ -266,8 +266,8 @@ def check_and_recover_stuck_processing():
                 
                 bg_proc.update({
                     'is_running': False,
-                    'status_message': f'Tier 1 auto-stopped due to timeout. Recovered {total_people} people, {total_metrics} metrics',
-                    'errors': bg_proc['errors'] + ['Tier 1 processing timeout - automatically recovered']
+                    'status_message': f'2000 RPM auto-stopped due to timeout. Recovered {total_people} people, {total_metrics} metrics',
+                    'errors': bg_proc['errors'] + ['2000 RPM processing timeout - automatically recovered']
                 })
                 
                 return True  # Indicate recovery occurred
@@ -775,34 +775,45 @@ def setup_gemini(api_key, model_id="gemini-1.5-flash"):
         return None
 
 def get_model_rate_limits(model_id):
-    """Get rate limits for different Gemini models - UPDATED FOR PAID TIER 1"""
+    """Get rate limits for different Gemini models - UPDATED FOR ACTUAL TIER 1 LIMITS"""
     rate_limits = {
-        # PAID TIER 1 - Much higher limits
-        "gemini-1.5-flash": {"requests_per_minute": 1000, "delay": 0.1},  # 1000 RPM
-        "gemini-1.5-flash-latest": {"requests_per_minute": 1000, "delay": 0.1},
-        "gemini-1.5-flash-8b": {"requests_per_minute": 4000, "delay": 0.05},  # 4000 RPM
-        "gemini-1.5-pro": {"requests_per_minute": 360, "delay": 0.2},  # 360 RPM
-        "gemini-1.5-pro-latest": {"requests_per_minute": 360, "delay": 0.2},
+        # ACTUAL TIER 1 LIMITS - Much higher than before
+        "gemini-1.5-flash": {"requests_per_minute": 2000, "delay": 0.03},  # 2000 RPM = 33/sec
+        "gemini-1.5-flash-latest": {"requests_per_minute": 2000, "delay": 0.03},
+        "gemini-1.5-flash-8b": {"requests_per_minute": 4000, "delay": 0.015},  # 4000 RPM = 67/sec
+        "gemini-1.5-pro": {"requests_per_minute": 1000, "delay": 0.06},  # 1000 RPM = 17/sec
+        "gemini-1.5-pro-latest": {"requests_per_minute": 1000, "delay": 0.06},
         # 2.0 models with conservative paid limits
-        "gemini-2.0-flash-thinking-exp": {"requests_per_minute": 300, "delay": 0.3},
-        "gemini-2.0-flash-exp": {"requests_per_minute": 300, "delay": 0.3},
-        "gemini-2.5-flash-exp": {"requests_per_minute": 200, "delay": 0.4},
-        "gemini-exp-1114": {"requests_per_minute": 100, "delay": 0.8},
-        "gemini-exp-1121": {"requests_per_minute": 100, "delay": 0.8}
+        "gemini-2.0-flash-thinking-exp": {"requests_per_minute": 300, "delay": 0.2},
+        "gemini-2.0-flash-exp": {"requests_per_minute": 300, "delay": 0.2},
+        "gemini-2.5-flash-exp": {"requests_per_minute": 200, "delay": 0.3},
+        "gemini-exp-1114": {"requests_per_minute": 100, "delay": 0.6},
+        "gemini-exp-1121": {"requests_per_minute": 100, "delay": 0.6}
     }
     
     # Get base limits
-    base_limits = rate_limits.get(model_id, {"requests_per_minute": 100, "delay": 0.8})
+    base_limits = rate_limits.get(model_id, {"requests_per_minute": 100, "delay": 0.6})
     
     # Special handling for 2.0+ models which can be unstable
     if any(version in model_id for version in ["2.0", "2.5"]):
-        base_limits["delay"] = max(base_limits["delay"], 0.3)  # Minimum 0.3s delay
+        base_limits["delay"] = max(base_limits["delay"], 0.2)  # Minimum 0.2s delay
         base_limits["max_retries"] = 3
         base_limits["timeout_seconds"] = 90  # Longer timeout for newer models
         base_limits["experimental"] = True
     else:
         base_limits["timeout_seconds"] = 60
         base_limits["experimental"] = False
+    
+    # Add batching info for ultra-high rate models
+    if base_limits["requests_per_minute"] >= 2000:
+        base_limits["supports_batching"] = True
+        base_limits["batch_size"] = 3  # Process 3 chunks with minimal delay
+    elif base_limits["requests_per_minute"] >= 1000:
+        base_limits["supports_batching"] = True
+        base_limits["batch_size"] = 2  # Process 2 chunks with minimal delay
+    else:
+        base_limits["supports_batching"] = False
+        base_limits["batch_size"] = 1
     
     return base_limits
 
@@ -1068,7 +1079,7 @@ def extract_single_chunk_safe(text, model):
 
 # --- BACKGROUND PROCESSING FUNCTIONS ---
 def start_background_extraction(text, model, preprocessing_mode, chunk_size_mode):
-    """OPTIMIZED: Start background extraction with Tier 1 optimizations"""
+    """OPTIMIZED: Start background extraction with 2000 RPM Flash 1.5 optimizations"""
     st.session_state.background_processing = {
         'is_running': True,
         'progress': 0,
@@ -1088,48 +1099,57 @@ def start_background_extraction(text, model, preprocessing_mode, chunk_size_mode
         # Preprocess text
         cleaned_text = preprocess_newsletter_text(text, preprocessing_mode)
         
-        # TIER 1 OPTIMIZED: Much larger chunk sizes for faster processing
-        tier1_chunk_sizes = {
-            "small": 25000,      # Was 10K, now 25K
-            "medium": 50000,     # Was 20K, now 50K  
-            "large": 75000,      # Was 35K, now 75K
-            "xlarge": 100000,    # Was 50K, now 100K
-            "auto": min(max(len(cleaned_text) // 25, 40000), 75000)  # Much more aggressive auto-sizing
+        # 2000 RPM OPTIMIZED: Even larger chunk sizes for ultra-fast processing
+        flash_2000_chunk_sizes = {
+            "small": 40000,      # Was 25K, now 40K for 2000 RPM
+            "medium": 80000,     # Was 50K, now 80K
+            "large": 120000,     # Was 75K, now 120K
+            "xlarge": 150000,    # Was 100K, now 150K
+            "auto": min(max(len(cleaned_text) // 15, 60000), 120000),  # Much more aggressive auto-sizing
+            "single": len(cleaned_text)  # Process entire text as single chunk if possible
         }
         
-        # Use tier 1 optimized sizes
-        chunk_size = tier1_chunk_sizes.get(chunk_size_mode, 50000)
+        # Use 2000 RPM optimized sizes
+        chunk_size = flash_2000_chunk_sizes.get(chunk_size_mode, 80000)
         
-        # Create larger, optimized chunks
-        chunks = []
-        current_pos = 0
-        while current_pos < len(cleaned_text):
-            end_pos = min(current_pos + chunk_size, len(cleaned_text))
-            if end_pos < len(cleaned_text):
-                # Look for natural break points in larger window
-                search_start = max(end_pos - 1000, current_pos)  # Larger search window
-                para_break = cleaned_text.rfind('\n\n', search_start, end_pos)
-                if para_break > current_pos:
-                    end_pos = para_break + 2
-            
-            chunk = cleaned_text[current_pos:end_pos].strip()
-            if len(chunk) > 500:  # Minimum chunk size increased
-                chunks.append(chunk)
-            current_pos = end_pos
+        # For single chunk mode with 2000 RPM, try to process everything at once
+        if chunk_size_mode == "single" and len(cleaned_text) <= 200000:  # Up to 200K chars in single chunk
+            chunks = [cleaned_text]
+        else:
+            # Create optimized chunks for batching
+            chunks = []
+            current_pos = 0
+            while current_pos < len(cleaned_text):
+                end_pos = min(current_pos + chunk_size, len(cleaned_text))
+                if end_pos < len(cleaned_text):
+                    # Look for natural break points in larger window
+                    search_start = max(end_pos - 2000, current_pos)  # Much larger search window
+                    para_break = cleaned_text.rfind('\n\n', search_start, end_pos)
+                    if para_break > current_pos:
+                        end_pos = para_break + 2
+                
+                chunk = cleaned_text[current_pos:end_pos].strip()
+                if len(chunk) > 1000:  # Minimum chunk size for 2000 RPM
+                    chunks.append(chunk)
+                current_pos = end_pos
         
         st.session_state.background_processing['total_chunks'] = len(chunks)
-        logger.info(f"TIER 1 OPTIMIZED: {len(chunks)} chunks, avg size: {len(cleaned_text)//len(chunks) if chunks else 0}, model: {model.model_id}")
+        logger.info(f"2000 RPM OPTIMIZED: {len(chunks)} chunks, avg size: {len(cleaned_text)//len(chunks) if chunks else 0}, model: {model.model_id}")
         
-        # TIER 1 PROCESSING: Much faster with higher limits
+        # 2000 RPM PROCESSING: Ultra-fast with batching
         rate_limits = get_model_rate_limits(model.model_id)
         delay = rate_limits['delay']
+        supports_batching = rate_limits.get('supports_batching', False)
+        batch_size = rate_limits.get('batch_size', 1)
         
         all_people = []
         all_performance = []
         failed_chunks = []
         consecutive_failures = 0
         
-        for i, chunk in enumerate(chunks):
+        # Process chunks with batching for high-rate models
+        i = 0
+        while i < len(chunks):
             # Check if processing should stop
             if not st.session_state.background_processing['is_running']:
                 logger.info(f"Processing stopped by user at chunk {i+1}")
@@ -1138,123 +1158,126 @@ def start_background_extraction(text, model, preprocessing_mode, chunk_size_mode
             # Update activity timestamp
             st.session_state.background_processing['last_activity'] = datetime.now()
             
+            # Determine batch size for this iteration
+            if supports_batching and consecutive_failures == 0:
+                current_batch_size = min(batch_size, len(chunks) - i)
+                chunk_batch = chunks[i:i + current_batch_size]
+            else:
+                current_batch_size = 1
+                chunk_batch = [chunks[i]]
+            
             # Update progress
             st.session_state.background_processing.update({
-                'current_chunk': i + 1,
-                'progress': int(((i + 1) / len(chunks)) * 100),
-                'status_message': f'Processing chunk {i + 1}/{len(chunks)}... (Tier 1 Speed)'
+                'current_chunk': i + current_batch_size,
+                'progress': int(((i + current_batch_size) / len(chunks)) * 100),
+                'status_message': f'Processing batch {i//batch_size + 1} (chunks {i + 1}-{i + current_batch_size}/{len(chunks)})... (2000 RPM)'
             })
             
-            try:
-                logger.info(f"Processing chunk {i+1}/{len(chunks)} (size: {len(chunk)} chars, delay: {delay}s)")
-                people, performance = extract_single_chunk_safe(chunk, model)
-                
-                if people or performance:
-                    all_people.extend(people)
-                    all_performance.extend(performance)
-                    consecutive_failures = 0  # Reset failure counter
+            # Process batch
+            batch_people = []
+            batch_performance = []
+            batch_errors = 0
+            
+            for j, chunk in enumerate(chunk_batch):
+                try:
+                    logger.info(f"Processing chunk {i+j+1}/{len(chunks)} (size: {len(chunk)} chars, delay: {delay}s)")
+                    people, performance = extract_single_chunk_safe(chunk, model)
                     
-                    # TIER 1 OPTIMIZED: More frequent auto-saves (every 3 chunks or 15+ items)
-                    if (i + 1) % 3 == 0 or len(all_people) >= 15:
-                        if not st.session_state.enable_review_mode:
-                            # Direct save
-                            saved_p, saved_perf = save_approved_extractions(all_people, all_performance)
-                            st.session_state.background_processing['saved_people'] += saved_p
-                            st.session_state.background_processing['saved_performance'] += saved_perf
-                            
-                            # Clear saved items from memory
-                            all_people = []
-                            all_performance = []
-                            
-                            logger.info(f"Tier 1 auto-saved {saved_p} people, {saved_perf} metrics at chunk {i+1}")
+                    if people or performance:
+                        batch_people.extend(people)
+                        batch_performance.extend(performance)
+                        logger.info(f"Chunk {i+j+1} success: {len(people)} people, {len(performance)} metrics")
+                    else:
+                        batch_errors += 1
+                        logger.warning(f"Chunk {i+j+1}: No results found")
                     
-                    logger.info(f"Chunk {i+1} success: {len(people)} people, {len(performance)} metrics")
-                else:
-                    consecutive_failures += 1
-                    logger.warning(f"Chunk {i+1}: No results found")
+                    # 2000 RPM: Very minimal delay between chunks in batch
+                    if j < len(chunk_batch) - 1:  # Don't delay after last chunk in batch
+                        time.sleep(delay)
+                        
+                except Exception as e:
+                    batch_errors += 1
+                    error_msg = f"Chunk {i+j+1} failed: {str(e)}"
+                    st.session_state.background_processing['errors'].append(error_msg)
+                    failed_chunks.append(i+j+1)
+                    logger.error(error_msg)
+            
+            # Process batch results
+            if batch_people or batch_performance:
+                all_people.extend(batch_people)
+                all_performance.extend(batch_performance)
+                consecutive_failures = 0  # Reset failure counter on success
                 
-                # Store results
-                st.session_state.background_processing['results'] = {
-                    'people': all_people,
-                    'performance': all_performance
-                }
-                
-                # TIER 1 OPTIMIZED: Minimal delays, exponential backoff only on failures
-                if consecutive_failures >= 3:
-                    actual_delay = min(delay * (1.2 ** consecutive_failures), delay * 3)  # Less aggressive backoff
-                    logger.warning(f"Multiple failures detected, increasing delay to {actual_delay}s")
-                else:
-                    actual_delay = delay  # Use the very short Tier 1 delays
-                
-                if i < len(chunks) - 1:  # Don't delay after last chunk
-                    # TIER 1: Much shorter delays
-                    time.sleep(actual_delay)
-                
-                # Emergency stop if too many consecutive failures (increased tolerance)
-                if consecutive_failures >= 15:  # Was 10, now 15 for Tier 1
-                    logger.error(f"Too many consecutive failures ({consecutive_failures}), stopping processing")
-                    st.session_state.background_processing['errors'].append(f"Stopped due to {consecutive_failures} consecutive failures")
-                    break
-                    
-            except TimeoutError as timeout_error:
-                consecutive_failures += 1
-                error_msg = f"Chunk {i + 1} timed out: {str(timeout_error)}"
-                st.session_state.background_processing['errors'].append(error_msg)
-                failed_chunks.append(i + 1)
-                logger.error(error_msg)
-                
-                # For timeouts, wait slightly longer but still much faster than before
-                time.sleep(max(delay * 2, 0.5))  # Minimum 0.5s, max based on model
-                
-                if consecutive_failures >= 8:  # Increased tolerance for Tier 1
-                    logger.error(f"Too many timeouts ({consecutive_failures}), stopping processing")
-                    break
-                    
-            except Exception as e:
-                consecutive_failures += 1
-                error_msg = f"Chunk {i + 1} failed: {str(e)}"
-                st.session_state.background_processing['errors'].append(error_msg)
-                failed_chunks.append(i + 1)
-                logger.error(error_msg)
-                
-                # Handle specific errors with Tier 1 optimizations
-                if "rate" in str(e).lower() or "quota" in str(e).lower():
-                    logger.warning(f"Rate limit hit at chunk {i+1} (unexpected for Tier 1), waiting...")
-                    time.sleep(max(delay * 4, 2))  # Still wait on rate limits but less than before
-                elif "503" in str(e) or "502" in str(e):
-                    logger.warning(f"Server error at chunk {i+1}, brief wait...")
-                    time.sleep(max(delay * 2, 1))  # Shorter waits for server errors
-                elif consecutive_failures >= 8:  # Increased tolerance
-                    logger.error(f"Too many failures ({consecutive_failures}), stopping processing")
-                    break
+                # 2000 RPM OPTIMIZED: Very frequent auto-saves (every 2 batches or 10+ items)
+                if (i // batch_size + 1) % 2 == 0 or len(all_people) >= 10:
+                    if not st.session_state.enable_review_mode:
+                        # Direct save
+                        saved_p, saved_perf = save_approved_extractions(all_people, all_performance)
+                        st.session_state.background_processing['saved_people'] += saved_p
+                        st.session_state.background_processing['saved_performance'] += saved_perf
+                        
+                        # Clear saved items from memory
+                        all_people = []
+                        all_performance = []
+                        
+                        logger.info(f"2000 RPM auto-saved {saved_p} people, {saved_perf} metrics at batch {i//batch_size + 1}")
+            else:
+                consecutive_failures += batch_errors
+            
+            # Store results
+            st.session_state.background_processing['results'] = {
+                'people': all_people,
+                'performance': all_performance
+            }
+            
+            # 2000 RPM: Minimal inter-batch delays, light backoff on failures
+            if consecutive_failures >= 3:
+                actual_delay = min(delay * (1.1 ** consecutive_failures), delay * 2)  # Very light backoff
+                logger.warning(f"Multiple failures detected, increasing delay to {actual_delay}s")
+            else:
+                actual_delay = delay * 2  # Small inter-batch delay even on success
+            
+            # Inter-batch delay
+            if i + current_batch_size < len(chunks):
+                time.sleep(actual_delay)
+            
+            # Move to next batch
+            i += current_batch_size
+            
+            # Emergency stop if too many consecutive failures (very high tolerance for 2000 RPM)
+            if consecutive_failures >= 20:  # Was 15, now 20 for ultra-fast processing
+                logger.error(f"Too many consecutive failures ({consecutive_failures}), stopping processing")
+                st.session_state.background_processing['errors'].append(f"Stopped due to {consecutive_failures} consecutive failures")
+                break
         
         # Final save of any remaining items
         if all_people or all_performance:
             if st.session_state.enable_review_mode:
                 # Add to review queue
-                add_to_review_queue(all_people, all_performance, f"Tier 1 Background Extraction ({len(chunks)} chunks)")
+                add_to_review_queue(all_people, all_performance, f"2000 RPM Flash Extraction ({len(chunks)} chunks)")
                 logger.info(f"Added {len(all_people)} people, {len(all_performance)} metrics to review queue")
             else:
                 # Direct save
                 saved_p, saved_perf = save_approved_extractions(all_people, all_performance)
                 st.session_state.background_processing['saved_people'] += saved_p
                 st.session_state.background_processing['saved_performance'] += saved_perf
-                logger.info(f"Final Tier 1 save: {saved_p} people, {saved_perf} metrics")
+                logger.info(f"Final 2000 RPM save: {saved_p} people, {saved_perf} metrics")
         
         # Complete processing
         total_found = st.session_state.background_processing['saved_people'] + len(st.session_state.background_processing['results']['people'])
         total_metrics = st.session_state.background_processing['saved_performance'] + len(st.session_state.background_processing['results']['performance'])
         
         processing_time = (datetime.now() - st.session_state.background_processing['start_time']).total_seconds()
+        chunks_per_minute = (len(chunks) / processing_time) * 60 if processing_time > 0 else 0
         
         st.session_state.background_processing.update({
             'is_running': False,
-            'status_message': f'Tier 1 Complete! Found {total_found} people, {total_metrics} metrics in {processing_time:.1f}s',
+            'status_message': f'2000 RPM Complete! Found {total_found} people, {total_metrics} metrics in {processing_time:.1f}s ({chunks_per_minute:.1f} chunks/min)',
             'progress': 100,
             'failed_chunks': failed_chunks
         })
         
-        logger.info(f"Tier 1 background extraction completed: {total_found} people, {total_metrics} metrics, {len(failed_chunks)} failed chunks, {processing_time:.1f}s total")
+        logger.info(f"2000 RPM background extraction completed: {total_found} people, {total_metrics} metrics, {len(failed_chunks)} failed chunks, {processing_time:.1f}s total, {chunks_per_minute:.1f} chunks/min")
         
     except Exception as e:
         st.session_state.background_processing.update({
@@ -1262,7 +1285,7 @@ def start_background_extraction(text, model, preprocessing_mode, chunk_size_mode
             'status_message': f'Failed: {str(e)}',
             'errors': [str(e)]
         })
-        logger.error(f"Tier 1 background extraction failed: {e}")
+        logger.error(f"2000 RPM background extraction failed: {e}")
 
 def display_background_processing_widget():
     """SIMPLIFIED: Display minimal background processing widget in sidebar only"""
@@ -1271,14 +1294,14 @@ def display_background_processing_widget():
     if not bg_proc['is_running'] and bg_proc['progress'] == 0:
         return
     
-    # Check for timeout/stuck processing - TIER 1 OPTIMIZED
+    # Check for timeout/stuck processing - 2000 RPM OPTIMIZED
     if bg_proc['is_running'] and 'last_activity' in bg_proc:
         time_since_activity = (datetime.now() - bg_proc['last_activity']).total_seconds()
-        # TIER 1: Reduced timeout from 5 minutes to 2 minutes (much faster processing expected)
-        if time_since_activity > 120:  # 2 minutes timeout for Tier 1
+        # 2000 RPM: Reduced timeout from 2 minutes to 90 seconds (ultra-fast processing expected)
+        if time_since_activity > 90:  # 90 seconds timeout for 2000 RPM
             st.session_state.background_processing['is_running'] = False
-            st.session_state.background_processing['status_message'] = 'Tier 1 timeout - Processing stopped automatically'
-            st.session_state.background_processing['errors'].append('Tier 1 processing timeout after 2 minutes of inactivity')
+            st.session_state.background_processing['status_message'] = '2000 RPM timeout - Processing stopped automatically'
+            st.session_state.background_processing['errors'].append('2000 RPM processing timeout after 90 seconds of inactivity')
     
     # SIMPLIFIED WIDGET - Only show in sidebar
     with st.container():
@@ -1288,7 +1311,7 @@ def display_background_processing_widget():
             total = bg_proc['total_chunks']
             
             # Minimal progress display
-            st.progress(progress / 100, text=f"⚡ Tier 1 Extracting: {progress}%")
+            st.progress(progress / 100, text=f"⚡ 2000 RPM Extracting: {progress}%")
             
             col1, col2 = st.columns(2)
             with col1:
@@ -1311,7 +1334,7 @@ def display_background_processing_widget():
                 total_people = bg_proc.get('saved_people', 0) + len(results['people'])
                 total_metrics = bg_proc.get('saved_performance', 0) + len(results['performance'])
                 
-                st.success(f"⚡ Tier 1 Complete: {total_people}P/{total_metrics}M")
+                st.success(f"⚡ 2000 RPM Complete: {total_people}P/{total_metrics}M")
                 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1331,7 +1354,7 @@ def display_background_processing_widget():
                         st.rerun()
             
             elif bg_proc.get('errors'):
-                st.error("❌ Tier 1 extraction failed")
+                st.error("❌ 2000 RPM extraction failed")
                 if st.button("❌ Clear", key="dismiss_error_simple", use_container_width=True):
                     st.session_state.background_processing = {
                         'is_running': False, 'progress': 0, 'total_chunks': 0, 'current_chunk': 0,
@@ -1441,194 +1464,61 @@ def get_firm_performance_metrics(firm_id):
         return []
     return firm.get('performance_metrics', [])
 
-# --- ENHANCED OVERLAP WORK HISTORY SYSTEM ---
+# --- SIMPLIFIED SHARED WORK HISTORY SYSTEM (NO DATE OVERLAP) ---
 
-def calculate_overlap_years(start1, end1, start2, end2):
-    """Calculate overlap between two employment periods with detailed info"""
-    today = date.today()
-    period1_end = end1 if end1 is not None else today
-    period2_end = end2 if end2 is not None else today
-    
-    latest_start = max(start1, start2)
-    earliest_end = min(period1_end, period2_end)
-    
-    overlap_days = (earliest_end - latest_start).days
-    if overlap_days <= 0:
-        return {
-            'years': 0.0,
-            'days': 0,
-            'start_date': None,
-            'end_date': None,
-            'is_current': False
-        }
-    
-    overlap_years = round(overlap_days / 365.25, 1)
-    is_current = (period1_end == today or period2_end == today) and earliest_end == today
-    
-    return {
-        'years': overlap_years,
-        'days': overlap_days,
-        'start_date': latest_start,
-        'end_date': earliest_end if earliest_end != today else None,
-        'is_current': is_current
-    }
-
-def get_person_connection_strength(person_id):
-    """Calculate overall connection strength for a person"""
-    shared_history = get_shared_work_history(person_id)
-    
-    if not shared_history:
-        return {'strength': 0, 'connections': 0, 'total_overlap_years': 0}
-    
-    total_overlap = sum(conn['overlap_years'] for conn in shared_history)
-    connection_count = len(shared_history)
-    
-    # Calculate strength score (0-100)
-    strength = min(100, (total_overlap * 10) + (connection_count * 5))
-    
-    return {
-        'strength': round(strength, 1),
-        'connections': connection_count,
-        'total_overlap_years': round(total_overlap, 1),
-        'top_connections': shared_history[:3]  # Top 3 connections
-    }
-
-def get_enhanced_shared_work_history(person_id):
-    """Enhanced version with detailed overlap analysis"""
+def get_shared_work_history(person_id):
+    """Get people who have worked at the same companies (no date overlap needed)"""
     person_employments = get_employments_by_person_id(person_id)
     shared_history = []
+    
+    # Get all companies this person has worked at
+    person_companies = set(emp['company_name'] for emp in person_employments)
     
     for other_person in st.session_state.people:
         if other_person['id'] == person_id:
             continue
         
         other_employments = get_employments_by_person_id(other_person['id'])
-        person_connections = []
+        other_companies = set(emp['company_name'] for emp in other_employments)
         
-        for person_emp in person_employments:
-            for other_emp in other_employments:
-                if person_emp['company_name'] == other_emp['company_name']:
-                    overlap_info = calculate_overlap_years(
-                        person_emp['start_date'], person_emp['end_date'],
-                        other_emp['start_date'], other_emp['end_date']
-                    )
-                    
-                    if overlap_info['years'] > 0:
-                        person_connections.append({
-                            "colleague_name": safe_get(other_person, 'name'),
-                            "colleague_id": other_person['id'],
-                            "shared_company": person_emp['company_name'],
-                            "colleague_current_company": safe_get(other_person, 'current_company_name'),
-                            "colleague_current_title": safe_get(other_person, 'current_title'),
-                            "overlap_info": overlap_info,
-                            "overlap_years": overlap_info['years'],  # For compatibility
-                            "person_title": person_emp['title'],
-                            "colleague_title": other_emp['title'],
-                            "overlap_period": f"{overlap_info['start_date'].strftime('%Y-%m')} to {'Present' if overlap_info['is_current'] else overlap_info['end_date'].strftime('%Y-%m')}",
-                            "connection_strength": min(100, overlap_info['years'] * 20)  # 0-100 scale
-                        })
+        # Find shared companies
+        shared_companies = person_companies.intersection(other_companies)
         
-        # Merge multiple connections with same person
-        if person_connections:
-            # Take the strongest connection if multiple
-            best_connection = max(person_connections, key=lambda x: x['overlap_years'])
-            best_connection['total_shared_companies'] = len(person_connections)
-            shared_history.append(best_connection)
+        if shared_companies:
+            # For each shared company, add a connection
+            for company in shared_companies:
+                # Get the person's role at this company
+                person_emp = next((emp for emp in person_employments if emp['company_name'] == company), None)
+                other_emp = next((emp for emp in other_employments if emp['company_name'] == company), None)
+                
+                if person_emp and other_emp:
+                    shared_history.append({
+                        "colleague_name": safe_get(other_person, 'name'),
+                        "colleague_id": other_person['id'],
+                        "shared_company": company,
+                        "colleague_current_company": safe_get(other_person, 'current_company_name'),
+                        "colleague_current_title": safe_get(other_person, 'current_title'),
+                        "person_title": person_emp['title'],
+                        "colleague_title": other_emp['title'],
+                        "colleague_email": safe_get(other_person, 'email'),
+                        "colleague_linkedin": safe_get(other_person, 'linkedin_profile_url'),
+                        "connection_type": "Same Company"  # Simple connection type
+                    })
     
-    # Sort by connection strength, then by overlap years
-    return sorted(shared_history, key=lambda x: (x['connection_strength'], x['overlap_years']), reverse=True)
-
-def get_company_network_analysis(company_name):
-    """Analyze network connections within a specific company"""
-    company_people = get_people_by_firm(company_name)
+    # Remove duplicates (same person, different companies) and sort by name
+    unique_shared = {}
+    for item in shared_history:
+        key = f"{item['colleague_id']}"
+        if key not in unique_shared:
+            unique_shared[key] = item
+        else:
+            # If same person but different company, combine the companies
+            existing = unique_shared[key]
+            if existing['shared_company'] != item['shared_company']:
+                existing['shared_company'] = f"{existing['shared_company']}, {item['shared_company']}"
+                existing['connection_type'] = "Multiple Companies"
     
-    if len(company_people) < 2:
-        return {'connections': [], 'network_density': 0}
-    
-    connections = []
-    total_possible = len(company_people) * (len(company_people) - 1) / 2
-    actual_connections = 0
-    
-    for i, person1 in enumerate(company_people):
-        for person2 in company_people[i+1:]:
-            shared = get_enhanced_shared_work_history(person1['id'])
-            connection = next((conn for conn in shared if conn['colleague_id'] == person2['id']), None)
-            
-            if connection:
-                connections.append({
-                    'person1': person1,
-                    'person2': person2,
-                    'connection': connection
-                })
-                actual_connections += 1
-    
-    network_density = round((actual_connections / total_possible) * 100, 1) if total_possible > 0 else 0
-    
-    return {
-        'connections': connections,
-        'network_density': network_density,
-        'total_people': len(company_people),
-        'connected_pairs': actual_connections
-    }
-
-def get_top_networked_people(limit=10):
-    """Get people with strongest professional networks"""
-    people_networks = []
-    
-    for person in st.session_state.people:
-        network_info = get_person_connection_strength(person['id'])
-        if network_info['connections'] > 0:
-            people_networks.append({
-                'person': person,
-                'network': network_info
-            })
-    
-    # Sort by connection strength
-    return sorted(people_networks, key=lambda x: x['network']['strength'], reverse=True)[:limit]
-
-def get_network_insights():
-    """Generate overall network insights"""
-    all_people = st.session_state.people
-    total_connections = 0
-    companies_with_networks = set()
-    
-    for person in all_people:
-        connections = get_person_connection_strength(person['id'])
-        total_connections += connections['connections']
-        
-        if connections['connections'] > 0:
-            companies_with_networks.add(safe_get(person, 'current_company_name'))
-    
-    # Remove duplicates (each connection counted twice)
-    unique_connections = total_connections // 2
-    
-    return {
-        'total_people': len(all_people),
-        'connected_people': len([p for p in all_people if get_person_connection_strength(p['id'])['connections'] > 0]),
-        'total_connections': unique_connections,
-        'companies_with_networks': len(companies_with_networks),
-        'network_coverage': round((len([p for p in all_people if get_person_connection_strength(p['id'])['connections'] > 0]) / len(all_people)) * 100, 1) if all_people else 0
-    }
-
-def get_shared_work_history(person_id):
-    """Get people who worked at same companies with overlap periods - LEGACY COMPATIBILITY"""
-    enhanced_history = get_enhanced_shared_work_history(person_id)
-    
-    # Convert to legacy format for backward compatibility
-    legacy_format = []
-    for connection in enhanced_history:
-        legacy_format.append({
-            "colleague_name": connection['colleague_name'],
-            "colleague_id": connection['colleague_id'],
-            "shared_company": connection['shared_company'],
-            "colleague_current_company": connection['colleague_current_company'],
-            "colleague_current_title": connection['colleague_current_title'],
-            "overlap_years": connection['overlap_years'],
-            "person_title": connection['person_title'],
-            "colleague_title": connection['colleague_title']
-        })
-    
-    return legacy_format
+    return sorted(unique_shared.values(), key=lambda x: x['colleague_name'])
 
 # --- PAGINATION HELPERS ---
 def paginate_data(data, page, items_per_page=10):
@@ -2062,9 +1952,6 @@ def go_to_firm_details(firm_id):
     st.session_state.selected_firm_id = firm_id
     st.session_state.current_view = 'firm_details'
 
-def go_to_network():
-    st.session_state.current_view = 'network'
-
 # Initialize session state
 try:
     initialize_session_state()
@@ -2158,13 +2045,22 @@ with st.sidebar:
         delay_str = f"{int(rate_limits['delay'] * 1000)}ms delay"
     else:
         delay_str = f"{rate_limits['delay']}s delay"
-    st.caption(f"⚡ Tier 1: {rate_limits['requests_per_minute']} req/min, {delay_str}")
+    
+    # Show batching support
+    batching_info = ""
+    if rate_limits.get('supports_batching', False):
+        batch_size = rate_limits.get('batch_size', 1)
+        batching_info = f" • Batching: {batch_size} chunks"
+    
+    st.caption(f"⚡ Flash 1.5: {rate_limits['requests_per_minute']} req/min, {delay_str}{batching_info}")
     
     # Show optimization note
-    if rate_limits['delay'] < 0.5:  # Very fast models
-        st.success("🚀 **Tier 1 Optimized**: Ultra-fast processing with larger chunks!")
-    elif rate_limits['delay'] < 2:
-        st.info("⚡ **Tier 1 Optimized**: Fast processing enabled")
+    if rate_limits['requests_per_minute'] >= 2000:  # 2000 RPM Flash
+        st.success("🚀 **2000 RPM OPTIMIZED**: Ultra-fast batched processing with massive chunks!")
+    elif rate_limits['requests_per_minute'] >= 1000:  # 1000+ RPM
+        st.info("⚡ **High-Speed Processing**: Fast batched processing enabled")
+    elif rate_limits['delay'] < 0.5:  # Very fast models
+        st.info("⚡ **Fast Processing**: Optimized for speed")
     else:
         st.caption("🔬 Experimental model - slower processing")
     
@@ -2200,17 +2096,17 @@ with st.sidebar:
     chunking_options = {
         "🤖 Auto (Recommended)": "auto",
         "📄 Single Chunk": "single",
-        "🔹 Small Chunks (25K)": "small",      # Updated for Tier 1
-        "⚖️ Medium Chunks (50K)": "medium",     # Updated for Tier 1
-        "🔷 Large Chunks (75K)": "large",       # Updated for Tier 1
-        "🔶 XLarge Chunks (100K)": "xlarge"     # Updated for Tier 1
+        "🔹 Small Chunks (40K)": "small",      # Updated for 2000 RPM
+        "⚖️ Medium Chunks (80K)": "medium",     # Updated for 2000 RPM
+        "🔷 Large Chunks (120K)": "large",      # Updated for 2000 RPM
+        "🔶 XLarge Chunks (150K)": "xlarge"     # Updated for 2000 RPM
     }
     
     selected_chunking = st.selectbox(
         "Chunking Strategy:",
         options=list(chunking_options.keys()),
         index=0,
-        help="TIER 1 OPTIMIZED: Much larger chunks for faster processing. Auto mode uses intelligent sizing based on content length."
+        help="2000 RPM OPTIMIZED: Ultra-large chunks with batching for maximum speed. Auto mode uses intelligent sizing with batching support."
     )
     chunk_size_mode = chunking_options[selected_chunking]
     
@@ -2274,22 +2170,26 @@ with st.sidebar:
                             st.info(f"📁 **Size**: {char_count:,} characters")
                             st.info(f"🔤 **Encoding**: {encoding_used}")
                         with col_info2:
-                            # TIER 1 OPTIMIZED: Calculate estimates based on new chunk sizes and speed
+                            # 2000 RPM OPTIMIZED: Calculate estimates based on ultra-fast processing
                             if chunk_size_mode == "auto":
-                                estimated_chunk_size = min(max(char_count // 25, 40000), 75000)  # New auto logic
+                                estimated_chunk_size = min(max(char_count // 15, 60000), 120000)  # New auto logic
                             else:
-                                tier1_chunk_sizes = {"single": 50000, "small": 25000, "medium": 50000, "large": 75000, "xlarge": 100000}
-                                estimated_chunk_size = tier1_chunk_sizes.get(chunk_size_mode, 50000)
+                                flash_2000_chunk_sizes = {"single": char_count, "small": 40000, "medium": 80000, "large": 120000, "xlarge": 150000}
+                                estimated_chunk_size = flash_2000_chunk_sizes.get(chunk_size_mode, 80000)
                             
-                            estimated_chunks = max(1, char_count // estimated_chunk_size)
-                            # TIER 1 SPEED: Much faster processing time (0.3-0.5 minutes per chunk)
-                            estimated_time = estimated_chunks * 0.4  # 24 seconds per chunk average for Tier 1
+                            if chunk_size_mode == "single" and char_count <= 200000:
+                                estimated_chunks = 1
+                            else:
+                                estimated_chunks = max(1, char_count // estimated_chunk_size)
+                            
+                            # 2000 RPM SPEED: Ultra-fast processing (0.1-0.2 minutes per chunk with batching)
+                            estimated_time = estimated_chunks * 0.15  # 9 seconds per chunk average for 2000 RPM
                             
                             st.info(f"📊 **Est. chunks**: {estimated_chunks} ({chunk_size_mode} mode)")
                             if estimated_time < 1:
-                                st.info(f"⚡ **Est. time**: ~{int(estimated_time * 60)}s (Tier 1)")
+                                st.info(f"⚡ **Est. time**: ~{int(estimated_time * 60)}s (2000 RPM)")
                             else:
-                                st.info(f"⚡ **Est. time**: ~{estimated_time:.1f}min (Tier 1)")
+                                st.info(f"⚡ **Est. time**: ~{estimated_time:.1f}min (2000 RPM)")
                         
                         # Show warning message if there was one
                         if error_msg:
@@ -2336,7 +2236,7 @@ with st.sidebar:
             else:
                 # Start background processing
                 start_background_extraction(newsletter_text, model, preprocessing_mode, chunk_size_mode)
-                st.success("🚀 Tier 1 background extraction started! Much faster processing enabled.")
+                st.success("🚀 2000 RPM Flash extraction started! Ultra-fast batched processing enabled.")
                 st.rerun()
 
     elif not GENAI_AVAILABLE:
@@ -2434,8 +2334,8 @@ if st.session_state.global_search and len(st.session_state.global_search.strip()
             st.rerun()
         st.markdown("---")
 
-# Top Navigation (with Network tab)
-col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1, 1])
+# Top Navigation (simplified - removed Network tab)
+col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 2])
 
 with col1:
     if st.button("👥 People", use_container_width=True, 
@@ -2450,27 +2350,25 @@ with col2:
         st.rerun()
 
 with col3:
-    if st.button("🔗 Network", use_container_width=True, 
-                 type="primary" if st.session_state.current_view == 'network' else "secondary"):
-        st.session_state.current_view = 'network'
-        st.rerun()
-
-with col4:
     if st.button("➕ Person", use_container_width=True):
         st.session_state.show_add_person_modal = True
         st.rerun()
 
-with col5:
+with col4:
     if st.button("🏢➕ Firm", use_container_width=True):
         st.session_state.show_add_firm_modal = True
         st.rerun()
 
-with col6:
+with col5:
     # Quick stats
-    total_metrics = sum(len(firm.get('performance_metrics', [])) for firm in st.session_state.firms)
-    insights = get_network_insights()
-    st.metric("📊", f"{len(st.session_state.people)}P/{len(st.session_state.firms)}F/{insights['total_connections']}C", 
-              label_visibility="collapsed", help="People/Firms/Connections")
+    col5a, col5b, col5c = st.columns(3)
+    with col5a:
+        st.metric("People", len(st.session_state.people))
+    with col5b:
+        st.metric("Firms", len(st.session_state.firms))
+    with col5c:
+        total_metrics = sum(len(firm.get('performance_metrics', [])) for firm in st.session_state.firms)
+        st.metric("Metrics", total_metrics)
 
 # --- ADD PERSON MODAL (FIXED: Using simple_text_input in forms) ---
 if st.session_state.show_add_person_modal:
@@ -2714,20 +2612,15 @@ if st.session_state.current_view == 'people':
                                 if aum and aum != 'Unknown':
                                     st.text(f"💰 {aum}")
                                 
-                                # Performance metrics count and network info
+                                # Performance metrics count and simple connection info
                                 person_metrics = get_person_performance_metrics(person['id'])
-                                network_info = get_person_connection_strength(person['id'])
+                                shared_history = get_shared_work_history(person['id'])
                                 
-                                col_metrics, col_network = st.columns(2)
-                                with col_metrics:
-                                    if person_metrics:
-                                        st.text(f"📊 {len(person_metrics)} metrics")
-                                with col_network:
-                                    if network_info['connections'] > 0:
-                                        strength_emoji = "💪" if network_info['strength'] >= 75 else "⭐" if network_info['strength'] >= 50 else "🔸"
-                                        st.text(f"{strength_emoji} {network_info['connections']} connections")
-                                    else:
-                                        st.text("🔗 No connections")
+                                if person_metrics:
+                                    st.text(f"📊 {len(person_metrics)} metrics")
+                                
+                                if shared_history:
+                                    st.text(f"🔗 {len(shared_history)} connections")
                                 
                                 # Show when added/updated
                                 if 'created_date' in person or 'last_updated' in person:
@@ -2961,29 +2854,15 @@ elif st.session_state.current_view == 'firm_details' and st.session_state.select
         st.info("No performance metrics found for this firm.")
         st.write("💡 Performance metrics will appear here when extracted from newsletters.")
     
-    # People at this firm with network analysis
+    # People at this firm (simplified)
     st.markdown("---")
     st.subheader(f"👥 People at {safe_get(firm, 'name')}")
     
     firm_people = get_people_by_firm(safe_get(firm, 'name'))
     if firm_people:
-        # Get network analysis for this company
-        network_analysis = get_company_network_analysis(safe_get(firm, 'name'))
-        
-        # Company network overview
-        if len(firm_people) > 1:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Internal Connections", network_analysis['connected_pairs'])
-            with col2:
-                st.metric("Network Density", f"{network_analysis['network_density']}%")
-            with col3:
-                avg_connections = sum(get_person_connection_strength(p['id'])['connections'] for p in firm_people) / len(firm_people)
-                st.metric("Avg Connections/Person", f"{avg_connections:.1f}")
-        
-        # Show people with their network info
+        # Show people with basic info
         for person in firm_people[:10]:  # Show first 10
-            network_info = get_person_connection_strength(person['id'])
+            shared_history = get_shared_work_history(person['id'])
             
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
@@ -3001,11 +2880,10 @@ elif st.session_state.current_view == 'firm_details' and st.session_state.select
                         st.caption(f"🏆 {expertise}")
                 
                 with col3:
-                    # Network strength
-                    if network_info['connections'] > 0:
-                        strength_emoji = "💪" if network_info['strength'] >= 75 else "⭐" if network_info['strength'] >= 50 else "🔸"
-                        st.metric("🔗", network_info['connections'], label_visibility="collapsed")
-                        st.caption(f"{strength_emoji} {network_info['strength']}/100")
+                    # Simple connection count
+                    if shared_history:
+                        st.metric("🔗", len(shared_history), label_visibility="collapsed")
+                        st.caption(f"{len(shared_history)} connections")
                     else:
                         st.metric("🔗", 0, label_visibility="collapsed")
                         st.caption("No connections")
@@ -3017,18 +2895,6 @@ elif st.session_state.current_view == 'firm_details' and st.session_state.select
         
         if len(firm_people) > 10:
             st.info(f"Showing first 10 of {len(firm_people)} people")
-        
-        # Show internal connections if any
-        if network_analysis['connections']:
-            with st.expander(f"🔗 Internal Network Connections ({len(network_analysis['connections'])})", expanded=False):
-                for connection in network_analysis['connections'][:5]:  # Show top 5
-                    person1 = connection['person1']
-                    person2 = connection['person2']
-                    conn_info = connection['connection']
-                    
-                    st.markdown(f"**{safe_get(person1, 'name')}** ↔ **{safe_get(person2, 'name')}**")
-                    st.caption(f"Worked together {conn_info['overlap_years']} years at {conn_info['shared_company']}")
-                    st.caption(f"Connection strength: {conn_info['connection_strength']}/100")
     else:
         st.info("No people added for this firm yet.")
 
@@ -3147,106 +3013,87 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
     else:
         st.info("No employment history available.")
     
-    # ENHANCED PROFESSIONAL NETWORK CONNECTIONS
+    # Shared Work History - Simple Table View (No Date Overlap)
     st.markdown("---")
-    st.subheader("🤝 Professional Network Analysis")
+    st.subheader("🤝 Shared Work History")
     
-    # Network strength overview
-    network_info = get_person_connection_strength(person['id'])
+    shared_history = get_shared_work_history(person['id'])
     
-    if network_info['connections'] > 0:
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("🔗 Connections", network_info['connections'])
-        with col2:
-            st.metric("💪 Network Strength", f"{network_info['strength']}/100")
-        with col3:
-            st.metric("⏱️ Total Overlap", f"{network_info['total_overlap_years']} years")
-        with col4:
-            if network_info['strength'] >= 75:
-                st.success("🌟 Super Networked")
-            elif network_info['strength'] >= 50:
-                st.info("⭐ Well Connected")
-            elif network_info['strength'] >= 25:
-                st.warning("🔸 Moderately Connected")
-            else:
-                st.caption("🔹 Lightly Connected")
+    if shared_history:
+        st.write(f"**Found {len(shared_history)} colleagues who worked at the same companies:**")
         
-        # Enhanced connection details
-        shared_history = get_enhanced_shared_work_history(person['id'])
+        # Create a clean table similar to the image (without overlap years)
+        table_data = []
+        for connection in shared_history:
+            table_data.append({
+                "Full Name": connection['colleague_name'],
+                "Contact": "📧" if connection.get('colleague_email') else "🔗" if connection.get('colleague_linkedin') else "",
+                "Shared Company": connection['shared_company'],
+                "Current Company": connection['colleague_current_company'],
+                "Connection Type": connection['connection_type']
+            })
         
-        st.markdown("#### 🔗 Professional Connections")
+        # Display as a clean dataframe
+        if table_data:
+            df = pd.DataFrame(table_data)
+            
+            # Style the dataframe to look more like the image
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Full Name": st.column_config.TextColumn("Full Name", width="medium"),
+                    "Contact": st.column_config.TextColumn("Contact", width="small"),
+                    "Shared Company": st.column_config.TextColumn("Shared Company", width="medium"),
+                    "Current Company": st.column_config.TextColumn("Current Company", width="medium"),
+                    "Connection Type": st.column_config.TextColumn("Connection Type", width="small")
+                }
+            )
         
-        for connection in shared_history[:10]:  # Show first 10
+        # Show individual connection cards for the top connections
+        st.markdown("#### 🔗 Top Connections")
+        for connection in shared_history[:5]:  # Show first 5
             with st.container(border=True):
-                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                col1, col2, col3 = st.columns([2, 2, 1])
                 
                 with col1:
                     st.markdown(f"**{connection['colleague_name']}**")
                     st.caption(f"Shared: {connection['shared_company']}")
-                    if connection.get('total_shared_companies', 1) > 1:
-                        st.caption(f"🔄 {connection['total_shared_companies']} shared companies")
+                    st.caption(f"Then: {connection['colleague_title']}")
                 
                 with col2:
                     st.caption(f"**Current:** {connection['colleague_current_title']}")
                     st.caption(f"at {connection['colleague_current_company']}")
-                    st.caption(f"**Then:** {connection['colleague_title']}")
+                    
+                    # Contact info if available
+                    if connection.get('colleague_email'):
+                        st.caption(f"📧 {connection['colleague_email']}")
+                    if connection.get('colleague_linkedin'):
+                        st.caption(f"🔗 LinkedIn")
                 
                 with col3:
-                    overlap_info = connection['overlap_info']
-                    st.metric("Overlap", f"{connection['overlap_years']}y")
-                    st.caption(f"📅 {connection['overlap_period']}")
-                    if overlap_info['is_current']:
-                        st.success("🔄 Current")
-                
-                with col4:
-                    strength = connection['connection_strength']
-                    if strength >= 75:
-                        st.success("💪")
-                        st.caption("Strong")
-                    elif strength >= 50:
-                        st.info("⭐")
-                        st.caption("Medium")
+                    # Show connection type instead of years
+                    if connection['connection_type'] == "Multiple Companies":
+                        st.success("🏢 Multiple")
+                        st.caption("Shared Companies")
                     else:
-                        st.caption("🔸")
-                        st.caption("Weak")
+                        st.info("🔗 Same")
+                        st.caption("Company")
                     
-                    if st.button("👁️", key=f"view_connection_{connection['colleague_id']}", help="View Profile"):
+                    if st.button("👁️ View", key=f"view_colleague_{connection['colleague_id']}", use_container_width=True):
                         go_to_person_details(connection['colleague_id'])
                         st.rerun()
         
-        if len(shared_history) > 10:
-            st.info(f"Showing top 10 of {len(shared_history)} total connections")
+        if len(shared_history) > 5:
+            st.info(f"Showing top 5 of {len(shared_history)} total connections")
         
-        # Network insights
-        with st.expander("📊 Network Insights", expanded=False):
-            # Company diversity
-            companies = set(conn['shared_company'] for conn in shared_history)
-            st.write(f"**Company Diversity:** Worked with people from {len(companies)} different companies")
-            
-            # Current vs past connections
-            current_connections = sum(1 for conn in shared_history if conn['overlap_info']['is_current'])
-            past_connections = len(shared_history) - current_connections
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("🔄 Current Overlaps", current_connections)
-            with col2:
-                st.metric("📅 Past Overlaps", past_connections)
-            
-            # Connection strength distribution
-            strong_connections = sum(1 for conn in shared_history if conn['connection_strength'] >= 75)
-            medium_connections = sum(1 for conn in shared_history if 50 <= conn['connection_strength'] < 75)
-            weak_connections = len(shared_history) - strong_connections - medium_connections
-            
-            st.write(f"**Connection Strength:** {strong_connections} strong, {medium_connections} medium, {weak_connections} weak")
-    
     else:
-        st.info("No professional connections found yet.")
-        st.write("💡 This person will show network connections when:")
+        st.info("No shared work history found with other people in the database.")
+        st.write("💡 This person will show connections when:")
         st.write("• Other people in the database have worked at the same companies")
-        st.write("• Employment periods overlap in time")
         st.write("• More employment history is added to the system")
+        st.write("• People's work history includes past employers (not just current jobs)")
 
 # --- EDIT PERSON MODAL (FIXED: Using simple_text_input in forms) ---
 if st.session_state.show_edit_person_modal and st.session_state.edit_person_data:
@@ -3634,16 +3481,14 @@ with col3:
 # --- FOOTER ---
 st.markdown("---")
 st.markdown("### 👥 Asian Financial Industry Intelligence Platform")
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown("**🔍 Global Search**")
 with col2:
     st.markdown("**📊 Performance Tracking**") 
 with col3:
-    st.markdown("**🔗 Network Analysis**")
+    st.markdown("**🤝 Work History**")
 with col4:
-    st.markdown("**🤝 Connection Mapping**")
-with col5:
     st.markdown("**📋 Smart Review System**")
 
 # Auto-save functionality
