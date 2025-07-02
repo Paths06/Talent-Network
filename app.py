@@ -829,106 +829,148 @@ def extract_data_from_text(text, model):
     try:
         console_log(f"Sending to {model.model_id}")
         
-        # Enhanced prompt to extract contact info and source snippets
+        # Enhanced prompt with better instructions and examples
         prompt = f"""
-Extract financial professionals and performance data from this text.
+You are an expert at extracting hedge fund and financial professional information from news articles and reports.
 
-TEXT: {text}
+Extract ALL people and performance data from this text. Be comprehensive and capture everyone mentioned.
 
-Return ONLY valid JSON with this structure:
+IMPORTANT INSTRUCTIONS:
+1. Extract EVERY person mentioned, even briefly
+2. Include partial information if full details aren't available
+3. For performance data, extract ANY numerical metrics (returns, AUM, etc.)
+4. Include the exact text snippet where you found each piece of information
+
+TEXT TO ANALYZE:
+{text}
+
+Return ONLY valid JSON with this exact structure:
 {{
   "people": [
     {{
       "name": "Full Name",
       "current_company": "Company Name",
       "current_title": "Job Title",
-      "location": "City, Country",
-      "expertise": "Area of expertise",
-      "movement_type": "hire|promotion|departure|appointment",
-      "email": "email@company.com if found",
-      "phone": "phone number if found",
-      "linkedin": "LinkedIn profile URL if found",
-      "source_snippet": "The exact sentence/paragraph from which this person's info was extracted"
+      "location": "City, Country (if mentioned)",
+      "expertise": "Area of expertise or strategy",
+      "movement_type": "hire|promotion|departure|appointment|launch|founding",
+      "email": "email@company.com (if found)",
+      "phone": "phone number (if found)",
+      "linkedin": "LinkedIn profile URL (if found)",
+      "source_snippet": "The exact sentence or paragraph from which this person's info was extracted"
     }}
   ],
   "performance": [
     {{
       "fund_name": "Fund/Firm Name",
-      "metric_type": "return|sharpe|aum|alpha|beta",
-      "value": "numeric_value_only",
-      "period": "YTD|Q1|Q2|Q3|Q4|1Y|3Y|5Y",
-      "date": "YYYY",
-      "source_snippet": "The exact sentence/paragraph from which this metric was extracted"
+      "metric_type": "return|aum|assets|performance|benchmark",
+      "value": "numeric_value_with_unit",
+      "period": "YTD|Q1|Q2|Q3|Q4|1Y|3Y|5Y|specific_timeframe",
+      "date": "YYYY or YYYY-MM",
+      "source_snippet": "The exact sentence or paragraph from which this metric was extracted"
     }}
   ]
 }}
+
+EXAMPLES OF WHAT TO EXTRACT:
+- People: "John Smith joins Goldman Sachs as MD" → extract John Smith, Goldman Sachs, MD
+- Performance: "Fund returned 12% this year" → extract 12%, return, YTD
+- Moves: "Sarah Johnson leaves Citadel for new role at Millennium" → extract both movements
+- AUM: "Manages $2.5 billion" → extract $2.5 billion, AUM
+
+Extract everything you can find, even if incomplete. Be thorough!
 """
         
-        # Optimized generation config for paid tier
+        # Optimized generation config for better extraction
         generation_config = {
-            'temperature': 0.1,
-            'top_p': 0.8,
-            'max_output_tokens': 4096,
+            'temperature': 0.1,  # Lower temperature for more consistent extraction
+            'top_p': 0.9,
+            'max_output_tokens': 8192,  # Increased for longer responses
         }
+        
+        console_log(f"Prompt length: {len(prompt)} characters")
         
         response = model.generate_content(prompt, generation_config=generation_config)
         
         if not response or not response.text:
+            console_log("No response from Gemini model", "ERROR")
             return [], []
         
         response_text = response.text.strip()
+        console_log(f"Response length: {len(response_text)} characters")
         
-        # Extract JSON
+        # Extract JSON with better error handling
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
         
         if json_start == -1 or json_end <= json_start:
+            console_log("No valid JSON found in response", "ERROR")
+            console_log(f"First 500 chars of response: {response_text[:500]}")
             return [], []
         
         json_text = response_text[json_start:json_end]
+        console_log(f"Extracted JSON length: {len(json_text)} characters")
         
         # Try parsing, with repair if needed
         try:
             result = json.loads(json_text)
-        except json.JSONDecodeError:
+            console_log("JSON parsed successfully")
+        except json.JSONDecodeError as e:
+            console_log(f"JSON parse error: {e}, attempting repair", "WARNING")
             repaired_json = repair_json_response(json_text)
             try:
                 result = json.loads(repaired_json)
-            except json.JSONDecodeError:
+                console_log("JSON repaired and parsed successfully")
+            except json.JSONDecodeError as e2:
+                console_log(f"JSON repair failed: {e2}", "ERROR")
+                console_log(f"Failed JSON snippet: {json_text[:1000]}")
                 return [], []
         
         people = result.get('people', [])
         performance = result.get('performance', [])
         
-        # Validate extracted data
+        console_log(f"Raw extraction: {len(people)} people, {len(performance)} performance metrics")
+        
+        # More lenient validation
         valid_people = []
-        for p in people:
+        for i, p in enumerate(people):
             name = safe_get(p, 'name', '').strip()
             company = safe_get(p, 'current_company', '').strip()
             
-            if (name and company and 
-                len(name) > 2 and len(company) > 2 and
-                name.lower() not in ['name', 'full name', 'unknown'] and
-                company.lower() not in ['company', 'company name', 'unknown']):
+            console_log(f"Person {i+1}: '{name}' at '{company}'")
+            
+            # More lenient validation - just need a name
+            if (name and len(name) > 1 and
+                name.lower() not in ['name', 'full name', 'unknown', 'n/a', 'not specified']):
                 valid_people.append(p)
+                console_log(f"✅ Valid person: {name}")
+            else:
+                console_log(f"❌ Invalid person: {name} (too short or generic)")
         
         valid_performance = []
-        for perf in performance:
+        for i, perf in enumerate(performance):
             fund_name = safe_get(perf, 'fund_name', '').strip()
             metric_type = safe_get(perf, 'metric_type', '').strip()
             value = safe_get(perf, 'value', '').strip()
             
+            console_log(f"Performance {i+1}: '{fund_name}' - '{metric_type}': '{value}'")
+            
+            # More lenient validation
             if (fund_name and metric_type and value and
-                len(fund_name) > 2 and
-                fund_name.lower() not in ['fund name', 'unknown'] and
-                metric_type.lower() not in ['metric type', 'unknown']):
+                len(fund_name) > 1 and len(value) > 0 and
+                fund_name.lower() not in ['fund name', 'unknown', 'n/a']):
                 valid_performance.append(perf)
+                console_log(f"✅ Valid performance: {fund_name} - {value}")
+            else:
+                console_log(f"❌ Invalid performance: missing required fields")
         
-        console_log(f"Found {len(valid_people)} people, {len(valid_performance)} metrics")
+        console_log(f"Final result: {len(valid_people)} people, {len(valid_performance)} metrics")
         return valid_people, valid_performance
         
     except Exception as e:
         console_log(f"Extraction failed: {e}", "ERROR")
+        import traceback
+        console_log(f"Full traceback: {traceback.format_exc()}", "ERROR")
         return [], []
 
 def process_extraction_with_rate_limiting(text, model):
