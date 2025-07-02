@@ -213,7 +213,7 @@ def check_for_duplicates_in_extraction(people_data):
         if person_key:
             if person_key in seen_keys:
                 duplicates.append(person)
-                logger.warning(f"INTERNAL DUPLICATE: {safe_get(person, 'name')} at {person.get('current_company', person.get('company', ''))} appears multiple times in extraction")
+                # logger.warning(f"INTERNAL DUPLICATE: {safe_get(person, 'name')} at {person.get('current_company', person.get('company', ''))} appears multiple times in extraction")
             else:
                 seen_keys.add(person_key)
                 unique_people.append(person)
@@ -980,12 +980,12 @@ def process_extraction_with_rate_limiting(text, model):
                 if len(chunk) > 500:  # Minimum chunk size
                     chunks.append(chunk)
                     chunk_count += 1
-                    logger.info(f"[{SESSION_ID}] EXTRACTION: CHUNK_CREATED" - f"Chunk {chunk_count}: {len(chunk\")} chars (pos: {current_pos}-{end_pos})")
+                    # logger.info(f"[{SESSION_ID}] EXTRACTION: CHUNK_CREATED" - f"Chunk {chunk_count}: {len(chunk\")} chars (pos: {current_pos}-{end_pos})")
 
                     # logger.info(f\"[{SESSION_ID}] EXTRACTION: "CHUNK_CREATED" - f"Chunk {chunk_count}: {len(chunk\")} chars (pos: {current_pos}-{end_pos})")
                 current_pos = end_pos
             
-            logger.info(f"[{SESSION_ID}] EXTRACTION: CHUNKING_COMPLETE" - f"Created {len(chunks\")} chunks from {text_length} chars")
+            # logger.info(f"[{SESSION_ID}] EXTRACTION: CHUNKING_COMPLETE" - f"Created {len(chunks\")} chunks from {text_length} chars")
         
         all_people = []
         all_performance = []
@@ -993,7 +993,7 @@ def process_extraction_with_rate_limiting(text, model):
         
         # Process chunks with paid tier rate limiting (2000 RPM = ~33 per second)
         delay_between_requests = 0.03  # 30ms delay for paid tier
-        logger.info(f"[{SESSION_ID}] EXTRACTION: RATE_LIMITING" - f"Using {delay_between_requests}s delay between requests (2000 RPM\")")
+        # logger.info(f"[{SESSION_ID}] EXTRACTION: RATE_LIMITING" - f"Using {delay_between_requests}s delay between requests (2000 RPM\")")
         
         for i, chunk in enumerate(chunks):
             chunk_start_time = time.time()
