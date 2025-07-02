@@ -31,6 +31,32 @@ try:
 except ImportError:
     GENAI_AVAILABLE = False
 
+# Configure minimal logging - only essential events
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+
+# Configure main logger - minimal logging
+logging.basicConfig(
+    level=logging.WARNING,  # Only warnings and errors
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        RotatingFileHandler(
+            'hedge_fund_app.log',
+            maxBytes=5*1024*1024,  # 5MB
+            backupCount=2
+        )
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+# Essential-only loggers
+extraction_logger = logging.getLogger('extraction')
+extraction_handler = RotatingFileHandler('extraction.log', maxBytes=2*1024*1024, backupCount=1)
+extraction_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+extraction_logger.addHandler(extraction_handler)
+extraction_logger.setLevel(logging.INFO)
 
 # Session tracking (minimal)
 if 'session_id' not in st.session_state:
@@ -40,29 +66,29 @@ SESSION_ID = st.session_state.session_id
 
 def log_essential(message):
     """Log only essential events"""
-    logger.info(f"[{SESSION_ID}] {message}")
+    extraction_logger.info(f"[{SESSION_ID}] {message}")
 
 def log_extraction_progress(step, details=""):
     """Log extraction progress only"""
-    logger.info(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
+    extraction_logger.info(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
 
 def log_extraction_step(step, details="", level="INFO"):
     """Log extraction step with level"""
     if level == "ERROR":
-        logger.error(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
+        extraction_logger.error(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
     elif level == "WARNING":
-        logger.warning(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
+        extraction_logger.warning(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
     else:
-        logger.info(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
+        extraction_logger.info(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
 
 def log_profile_saved(profile_type, name, company=""):
     """Log when profiles are saved"""
     company_str = f" at {company}" if company else ""
-    logger.info(f"[{SESSION_ID}] SAVED: {profile_type} - {name}{company_str}")
+    extraction_logger.info(f"[{SESSION_ID}] SAVED: {profile_type} - {name}{company_str}")
 
 def log_user_action(action, details=""):
     """Log user actions"""
-    logger.info(f"[{SESSION_ID}] USER: {action} - {details}")
+    extraction_logger.info(f"[{SESSION_ID}] USER: {action} - {details}")
 
 # Minimal session start log
 log_essential(f"Session started")
@@ -969,7 +995,6 @@ def process_extraction_with_rate_limiting(text, model):
             chunk_count = 0
             while current_pos < len(text):
                 end_pos = min(current_pos + max_chunk_size, len(text))
-                
                 # Find paragraph break for better chunking
                 if end_pos < len(text):
                     break_pos = text.rfind('\n\n', current_pos, end_pos)
@@ -977,39 +1002,33 @@ def process_extraction_with_rate_limiting(text, model):
                         end_pos = break_pos + 2
                 
                 chunk = text[current_pos:end_pos].strip()
-                if len(chunk) > 500:  # Minimum chunk size
+                if len(chunk) > 500: # Minimum chunk size
                     chunks.append(chunk)
                     chunk_count += 1
                     log_extraction_step("CHUNK_CREATED", f"Chunk {chunk_count}: {len(chunk)} chars (pos: {current_pos}-{end_pos})")
                 current_pos = end_pos
-            
-            log_extraction_step("CHUNKING_COMPLETE", f"Created {len(chunks)} chunks from {text_length} chars")
+        
+        log_extraction_step("CHUNKING_COMPLETE", f"Created {len(chunks)} chunks from {text_length} chars")
         
         all_people = []
         all_performance = []
         failed_chunks = []
         
         # Process chunks with paid tier rate limiting (2000 RPM = ~33 per second)
-        delay_between_requests = 0.03  # 30ms delay for paid tier
+        delay_between_requests = 0.03 # 30ms delay for paid tier
         log_extraction_step("RATE_LIMITING", f"Using {delay_between_requests}s delay between requests (2000 RPM)")
         
         for i, chunk in enumerate(chunks):
             chunk_start_time = time.time()
-            
             try:
                 st.session_state.background_processing.update({
                     'progress': int((i / len(chunks)) * 100),
                     'status_message': f'Processing chunk {i+1}/{len(chunks)}...'
                 })
-                
                 log_extraction_step("CHUNK_PROCESS_START", f"Processing chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
-                
                 people, performance = extract_data_from_text(chunk, model)
-                
                 chunk_duration = time.time() - chunk_start_time
-                log_extraction_step("CHUNK_PROCESS_COMPLETE", 
-                    f"Chunk {i+1}/{len(chunks)} complete: {len(people)} people, {len(performance)} metrics (duration: {chunk_duration:.2f}s)")
-                
+                log_extraction_step("CHUNK_PROCESS_COMPLETE", f"Chunk {i+1}/{len(chunks)} complete: {len(people)} people, {len(performance)} metrics (duration: {chunk_duration:.2f}s)")
                 all_people.extend(people)
                 all_performance.extend(performance)
                 
@@ -1021,17 +1040,15 @@ def process_extraction_with_rate_limiting(text, model):
             except Exception as e:
                 chunk_duration = time.time() - chunk_start_time
                 failed_chunks.append(i+1)
-                log_extraction_step("CHUNK_PROCESS_ERROR", 
-                    f"Chunk {i+1}/{len(chunks)} failed: {e} (duration: {chunk_duration:.2f}s)", "ERROR")
+                log_extraction_step("CHUNK_PROCESS_ERROR", f"Chunk {i+1}/{len(chunks)} failed: {e} (duration: {chunk_duration:.2f}s)", "ERROR")
                 continue
-        
+                
         total_duration = time.time() - start_time
-        log_extraction_step("PROCESS_COMPLETE", 
-            f"Extraction process complete: {len(all_people)} people, {len(all_performance)} metrics from {len(chunks)} chunks, {len(failed_chunks)} failed (total duration: {total_duration:.2f}s)")
+        log_extraction_step("PROCESS_COMPLETE", f"Extraction process complete: {len(all_people)} people, {len(all_performance)} metrics from {len(chunks)} chunks, {len(failed_chunks)} failed (total duration: {total_duration:.2f}s)")
         
         if failed_chunks:
             log_extraction_step("FAILED_CHUNKS", f"Failed chunks: {failed_chunks}", "WARNING")
-        
+            
         return all_people, all_performance
         
     except Exception as e:
@@ -1079,7 +1096,6 @@ def get_shared_work_history(person_id):
         
         other_employments = get_employments_by_person_id(other_person['id'])
         other_company_periods = []
-        
         for emp in other_employments:
             if emp.get('start_date'):
                 other_company_periods.append({
@@ -1096,8 +1112,10 @@ def get_shared_work_history(person_id):
                 if person_period['company'] == other_period['company']:
                     # Calculate overlap
                     overlap = calculate_date_overlap(
-                        person_period['start_date'], person_period['end_date'],
-                        other_period['start_date'], other_period['end_date']
+                        person_period['start_date'],
+                        person_period['end_date'],
+                        other_period['start_date'],
+                        other_period['end_date']
                     )
                     
                     if overlap:
@@ -1110,7 +1128,7 @@ def get_shared_work_history(person_id):
                             duration_str = f"{overlap_days // 30} month(s)"
                         else:
                             duration_str = f"{overlap_days} day(s)"
-                        
+                            
                         overlap_period = f"{overlap_start.strftime('%b %Y')} - {overlap_end.strftime('%b %Y')}"
                         
                         shared_history.append({
@@ -1144,1425 +1162,1131 @@ def get_shared_work_history(person_id):
             -conn.get('overlap_days', 0),
             conn['colleague_name']
         )
-    
+        
     return sorted(list(unique_shared.values()), key=sort_key)
-
-def add_employment_with_dates(person_id, company_name, title, start_date, end_date=None, location="Unknown", strategy="Unknown"):
-    """Add employment record with proper date validation"""
-    try:
-        if end_date and start_date and end_date <= start_date:
-            raise ValueError("End date must be after start date")
-        
-        new_employment = {
-            "id": str(uuid.uuid4()),
-            "person_id": person_id,
-            "company_name": company_name,
-            "title": title,
-            "start_date": start_date,
-            "end_date": end_date,
-            "location": location,
-            "strategy": strategy,
-            "created_date": datetime.now().isoformat()
-        }
-        
-        st.session_state.employments.append(new_employment)
-        save_data()
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error adding employment: {e}")
-        return False
-
-# --- Navigation Functions with Logging ---
-def go_to_firms():
-    log_user_action("NAVIGATION", "Switched to Firms view")
-    st.session_state.current_view = 'firms'
-    st.session_state.selected_firm_id = None
-
-def go_to_people():
-    log_user_action("NAVIGATION", "Switched to People view")
-    st.session_state.current_view = 'people'
-    st.session_state.selected_person_id = None
-
-def go_to_person_details(person_id):
-    person = get_person_by_id(person_id)
-    person_name = safe_get(person, 'name', 'Unknown') if person else 'Unknown'
-    log_user_action("NAVIGATION", f"Viewing person details: {person_name} (ID: {person_id})")
-    st.session_state.selected_person_id = person_id
-    st.session_state.current_view = 'person_details'
-
-def go_to_firm_details(firm_id):
+    
+def get_performance_by_firm(firm_id):
+    """Get performance metrics for a given firm ID"""
     firm = get_firm_by_id(firm_id)
-    firm_name = safe_get(firm, 'name', 'Unknown') if firm else 'Unknown'
-    log_user_action("NAVIGATION", f"Viewing firm details: {firm_name} (ID: {firm_id})")
-    st.session_state.selected_firm_id = firm_id
-    st.session_state.current_view = 'firm_details'
+    if firm:
+        return firm.get('performance_metrics', [])
+    return []
 
-# --- Export Functions with Logging ---
-def export_to_csv():
-    """Export all data to CSV"""
-    start_time = time.time()
+def add_performance_metric_to_firm(firm_id, metric_type, value, period, date_str):
+    """Add a performance metric to a firm's profile"""
+    firm = get_firm_by_id(firm_id)
+    if not firm:
+        return False
     
-    try:
-        people_count = len(st.session_state.people)
-        firms_count = len(st.session_state.firms)
-        log_user_action("EXPORT_START", f"Starting CSV export: {people_count} people, {firms_count} firms")
-        
-        all_data = []
-        
-        # Export people
-        for person in st.session_state.people:
-            all_data.append({
-                'Type': 'Person',
-                'Name': safe_get(person, 'name'),
-                'Title': safe_get(person, 'current_title'),
-                'Company': safe_get(person, 'current_company_name'),
-                'Location': safe_get(person, 'location'),
-                'Email': safe_get(person, 'email'),
-                'Expertise': safe_get(person, 'expertise'),
-                'AUM': safe_get(person, 'aum_managed'),
-                'Asia_Based': 'Yes' if person.get('is_asia_based', False) else 'No'
-            })
-        
-        # Export firms
-        for firm in st.session_state.firms:
-            all_data.append({
-                'Type': 'Firm',
-                'Name': safe_get(firm, 'name'),
-                'Title': safe_get(firm, 'strategy'),
-                'Company': safe_get(firm, 'name'),
-                'Location': safe_get(firm, 'location'),
-                'Email': safe_get(firm, 'website'),
-                'Expertise': safe_get(firm, 'firm_type'),
-                'AUM': safe_get(firm, 'aum'),
-                'Asia_Based': 'Yes' if firm.get('is_asia_based', False) else 'No'
-            })
-        
-        df = pd.DataFrame(all_data)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"hedge_fund_data_{timestamp}.csv"
-        
-        duration = time.time() - start_time
-        log_user_action("EXPORT_SUCCESS", f"CSV export complete: {len(all_data)} records, file: {filename} (duration: {duration:.2f}s)")
-        
-        return df.to_csv(index=False), filename
+    if 'performance_metrics' not in firm:
+        firm['performance_metrics'] = []
     
-    except Exception as e:
-        duration = time.time() - start_time
-        log_user_action("EXPORT_ERROR", f"CSV export failed: {e} (duration: {duration:.2f}s)")
-        return None, None
+    metric_entry = {
+        'id': str(uuid.uuid4()),
+        'timestamp': datetime.now().isoformat(),
+        'type': metric_type,
+        'value': value,
+        'period': period,
+        'date': date_str,
+        'date_added': datetime.now().isoformat()
+    }
+    
+    firm['performance_metrics'].append(metric_entry)
+    firm['last_updated'] = datetime.now().isoformat()
+    return True
 
-def export_asia_csv():
-    """Export Asia-specific data to CSV"""
-    start_time = time.time()
-    
-    try:
-        asia_people = get_asia_people()
-        asia_firms = get_asia_firms()
-        
-        log_user_action("ASIA_EXPORT_START", f"Starting Asia CSV export: {len(asia_people)} people, {len(asia_firms)} firms")
-        
-        asia_data = []
-        
-        # Export Asia people
-        for person in asia_people:
-            asia_data.append({
-                'Type': 'Person',
-                'Name': safe_get(person, 'name'),
-                'Title': safe_get(person, 'current_title'),
-                'Company': safe_get(person, 'current_company_name'),
-                'Location': safe_get(person, 'location'),
-                'Email': safe_get(person, 'email'),
-                'Expertise': safe_get(person, 'expertise'),
-                'AUM': safe_get(person, 'aum_managed'),
-                'Region': 'Asia'
-            })
-        
-        # Export Asia firms
-        for firm in asia_firms:
-            asia_data.append({
-                'Type': 'Firm',
-                'Name': safe_get(firm, 'name'),
-                'Title': safe_get(firm, 'strategy'),
-                'Company': safe_get(firm, 'name'),
-                'Location': safe_get(firm, 'location'),
-                'Email': safe_get(firm, 'website'),
-                'Expertise': safe_get(firm, 'firm_type'),
-                'AUM': safe_get(firm, 'aum'),
-                'Region': 'Asia'
-            })
-        
-        if not asia_data:
-            log_user_action("ASIA_EXPORT_EMPTY", "No Asia-based data found for export")
-            return None, None
-        
-        df = pd.DataFrame(asia_data)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"asia_hedge_fund_data_{timestamp}.csv"
-        
-        duration = time.time() - start_time
-        log_user_action("ASIA_EXPORT_SUCCESS", f"Asia CSV export complete: {len(asia_data)} records, file: {filename} (duration: {duration:.2f}s)")
-        
-        return df.to_csv(index=False), filename
-    
-    except Exception as e:
-        duration = time.time() - start_time
-        log_user_action("ASIA_EXPORT_ERROR", f"Asia CSV export failed: {e} (duration: {duration:.2f}s)")
-        return None, None
+# --- Data Management Functions ---
+def add_person(person_data):
+    """Add a new person to the session state"""
+    person_data['id'] = str(uuid.uuid4())
+    person_data['created_date'] = datetime.now().isoformat()
+    person_data['last_updated'] = datetime.now().isoformat()
+    person_data['context_mentions'] = []
+    st.session_state.people.append(person_data)
+    log_profile_saved("person", safe_get(person_data, 'name'), safe_get(person_data, 'current_company_name'))
 
-# Initialize session state
-try:
-    log_user_action("APP_INIT_START", "Initializing application")
+def update_person(person_id, new_data):
+    """Update an existing person's data"""
+    person = get_person_by_id(person_id)
+    if person:
+        person.update(new_data)
+        person['last_updated'] = datetime.now().isoformat()
+        log_user_action("UPDATE_PERSON", f"Updated person: {safe_get(person, 'name')}")
+        return True
+    return False
+
+def delete_person(person_id):
+    """Delete a person and their associated employments"""
+    person = get_person_by_id(person_id)
+    if person:
+        st.session_state.people = [p for p in st.session_state.people if p['id'] != person_id]
+        st.session_state.employments = [e for e in st.session_state.employments if e['person_id'] != person_id]
+        log_user_action("DELETE_PERSON", f"Deleted person: {safe_get(person, 'name')}")
+        return True
+    return False
+
+def add_firm(firm_data):
+    """Add a new firm to the session state"""
+    firm_data['id'] = str(uuid.uuid4())
+    firm_data['created_date'] = datetime.now().isoformat()
+    firm_data['last_updated'] = datetime.now().isoformat()
+    firm_data['context_mentions'] = []
+    firm_data['performance_metrics'] = []
+    st.session_state.firms.append(firm_data)
+    log_profile_saved("firm", safe_get(firm_data, 'name'))
+
+def update_firm(firm_id, new_data):
+    """Update an existing firm's data"""
+    firm = get_firm_by_id(firm_id)
+    if firm:
+        firm.update(new_data)
+        firm['last_updated'] = datetime.now().isoformat()
+        log_user_action("UPDATE_FIRM", f"Updated firm: {safe_get(firm, 'name')}")
+        return True
+    return False
+
+def delete_firm(firm_id):
+    """Delete a firm"""
+    firm = get_firm_by_id(firm_id)
+    if firm:
+        st.session_state.firms = [f for f in st.session_state.firms if f['id'] != firm_id]
+        log_user_action("DELETE_FIRM", f"Deleted firm: {safe_get(firm, 'name')}")
+        return True
+    return False
+
+def add_employment(employment_data):
+    """Add a new employment record"""
+    employment_data['id'] = str(uuid.uuid4())
+    employment_data['created_date'] = datetime.now().isoformat()
+    # Convert date objects if necessary
+    if 'start_date' in employment_data and isinstance(employment_data['start_date'], str):
+        employment_data['start_date'] = datetime.strptime(employment_data['start_date'], '%Y-%m-%d').date()
+    if 'end_date' in employment_data and isinstance(employment_data['end_date'], str):
+        employment_data['end_date'] = datetime.strptime(employment_data['end_date'], '%Y-%m-%d').date()
+    elif 'end_date' in employment_data and employment_data['end_date'] == "Present":
+        employment_data['end_date'] = None # Represent "Present" as None
+        
+    st.session_state.employments.append(employment_data)
+    log_user_action("ADD_EMPLOYMENT", f"Added employment for {employment_data.get('person_id')} at {employment_data.get('company_name')}")
+
+def update_employment(employment_id, new_data):
+    """Update an existing employment record"""
+    for i, emp in enumerate(st.session_state.employments):
+        if emp['id'] == employment_id:
+            st.session_state.employments[i].update(new_data)
+            if 'start_date' in st.session_state.employments[i] and isinstance(st.session_state.employments[i]['start_date'], str):
+                st.session_state.employments[i]['start_date'] = datetime.strptime(st.session_state.employments[i]['start_date'], '%Y-%m-%d').date()
+            if 'end_date' in st.session_state.employments[i] and isinstance(st.session_state.employments[i]['end_date'], str):
+                st.session_state.employments[i]['end_date'] = datetime.strptime(st.session_state.employments[i]['end_date'], '%Y-%m-%d').date()
+            elif 'end_date' in st.session_state.employments[i] and st.session_state.employments[i]['end_date'] == "Present":
+                st.session_state.employments[i]['end_date'] = None
+            log_user_action("UPDATE_EMPLOYMENT", f"Updated employment: {employment_id}")
+            return True
+    return False
+
+def delete_employment(employment_id):
+    """Delete an employment record"""
+    original_count = len(st.session_state.employments)
+    st.session_state.employments = [e for e in st.session_state.employments if e['id'] != employment_id]
+    if len(st.session_state.employments) < original_count:
+        log_user_action("DELETE_EMPLOYMENT", f"Deleted employment: {employment_id}")
+        return True
+    return False
+
+# --- Export Functions ---
+def export_data_to_excel(people_data, firms_data, employments_data, performance_data):
+    """Export all data to a multi-sheet Excel file"""
+    if not EXCEL_AVAILABLE:
+        st.error("`openpyxl` library not found. Please install it for Excel export: `pip install openpyxl`")
+        return None, "Excel export not available."
+    
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # People Sheet
+        if people_data:
+            people_df = pd.DataFrame(people_data)
+            # Exclude context_mentions column
+            if 'context_mentions' in people_df.columns:
+                people_df = people_df.drop(columns=['context_mentions'])
+            people_df.to_excel(writer, sheet_name='People', index=False)
+        else:
+            pd.DataFrame([{"Message": "No people data available."}]).to_excel(writer, sheet_name='People', index=False)
+        
+        # Firms Sheet
+        if firms_data:
+            firms_df = pd.DataFrame(firms_data)
+            # Exclude context_mentions and performance_metrics columns
+            columns_to_drop = []
+            if 'context_mentions' in firms_df.columns:
+                columns_to_drop.append('context_mentions')
+            if 'performance_metrics' in firms_df.columns:
+                columns_to_drop.append('performance_metrics')
+            if columns_to_drop:
+                firms_df = firms_df.drop(columns=columns_to_drop)
+            firms_df.to_excel(writer, sheet_name='Firms', index=False)
+        else:
+            pd.DataFrame([{"Message": "No firm data available."}]).to_excel(writer, sheet_name='Firms', index=False)
+            
+        # Employments Sheet
+        if employments_data:
+            employments_df = pd.DataFrame(employments_data)
+            employments_df.to_excel(writer, sheet_name='Employments', index=False)
+        else:
+            pd.DataFrame([{"Message": "No employment data available."}]).to_excel(writer, sheet_name='Employments', index=False)
+            
+        # Performance Metrics Sheet
+        if performance_data:
+            performance_df = pd.DataFrame(performance_data)
+            performance_df.to_excel(writer, sheet_name='Performance Metrics', index=False)
+        else:
+            pd.DataFrame([{"Message": "No performance data available."}]).to_excel(writer, sheet_name='Performance Metrics', index=False)
+            
+    output.seek(0)
+    return output, "Excel export successful."
+
+def export_data_to_json_zip(people_data, firms_data, employments_data, performance_data):
+    """Export all data to a zip file containing separate JSON files"""
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED, False) as zip_file:
+        if people_data:
+            zip_file.writestr("people.json", json.dumps(people_data, indent=2, default=str))
+        if firms_data:
+            zip_file.writestr("firms.json", json.dumps(firms_data, indent=2, default=str))
+        if employments_data:
+            zip_file.writestr("employments.json", json.dumps(employments_data, indent=2, default=str))
+        if performance_data:
+            zip_file.writestr("performance_metrics.json", json.dumps(performance_data, indent=2, default=str))
+            
+    zip_buffer.seek(0)
+    return zip_buffer, "JSON (ZIP) export successful."
+
+# --- Data Analysis and Visualization ---
+def get_firm_strategy_distribution():
+    """Calculate and return the distribution of firm strategies"""
+    strategies = [safe_get(firm, 'strategy') for firm in st.session_state.firms if safe_get(firm, 'strategy') != 'Unknown']
+    strategy_counts = pd.Series(strategies).value_counts().reset_index()
+    strategy_counts.columns = ['Strategy', 'Count']
+    return strategy_counts
+
+def get_people_expertise_distribution():
+    """Calculate and return the distribution of people expertise"""
+    expertise_list = []
+    for person in st.session_state.people:
+        expertise_str = safe_get(person, 'expertise')
+        if expertise_str != 'Unknown':
+            # Split by common delimiters
+            expertises = [e.strip() for e in re.split(r'[,;/]', expertise_str) if e.strip()]
+            expertise_list.extend(expertises)
+    
+    expertise_counts = pd.Series(expertise_list).value_counts().reset_index()
+    expertise_counts.columns = ['Expertise', 'Count']
+    return expertise_counts
+
+def get_firms_by_aum_range():
+    """Categorize firms by AUM ranges"""
+    aum_ranges = {
+        "< $1B": 0,
+        "$1B - $5B": 0,
+        "$5B - $20B": 0,
+        "$20B - $50B": 0,
+        "> $50B": 0
+    }
+    
+    for firm in st.session_state.firms:
+        aum_str = safe_get(firm, 'aum', '').upper()
+        if 'B USD' in aum_str:
+            try:
+                aum_value = float(aum_str.replace('B USD', '').strip())
+                if aum_value < 1:
+                    aum_ranges["< $1B"] += 1
+                elif 1 <= aum_value < 5:
+                    aum_ranges["$1B - $5B"] += 1
+                elif 5 <= aum_value < 20:
+                    aum_ranges["$5B - $20B"] += 1
+                elif 20 <= aum_value < 50:
+                    aum_ranges["$20B - $50B"] += 1
+                else:
+                    aum_ranges["> $50B"] += 1
+            except ValueError:
+                continue # Ignore unparseable AUM values
+    
+    df = pd.DataFrame(aum_ranges.items(), columns=['AUM Range', 'Count'])
+    # Sort for better visualization
+    df['Sort Order'] = df['AUM Range'].map({
+        "< $1B": 0,
+        "$1B - $5B": 1,
+        "$5B - $20B": 2,
+        "$20B - $50B": 3,
+        "> $50B": 4
+    })
+    df = df.sort_values('Sort Order').drop(columns=['Sort Order'])
+    return df
+
+def get_employments_over_time():
+    """Aggregate employments by year"""
+    employment_years = {}
+    for emp in st.session_state.employments:
+        if emp.get('start_date'):
+            year = emp['start_date'].year
+            employment_years[year] = employment_years.get(year, 0) + 1
+    
+    df = pd.DataFrame(employment_years.items(), columns=['Year', 'New Employments'])
+    df = df.sort_values('Year')
+    return df
+
+def plot_firm_strategy_distribution(df):
+    """Plot firm strategy distribution as a pie chart"""
+    if df.empty:
+        return "No data to display for Firm Strategy Distribution."
+    fig = px.pie(df, values='Count', names='Strategy', title='Firm Strategy Distribution')
+    return fig
+
+def plot_people_expertise_distribution(df):
+    """Plot people expertise distribution as a bar chart"""
+    if df.empty:
+        return "No data to display for People Expertise Distribution."
+    fig = px.bar(df, x='Expertise', y='Count', title='People Expertise Distribution',
+                 labels={'Expertise': 'Area of Expertise', 'Count': 'Number of People'})
+    return fig
+
+def plot_firms_by_aum_range(df):
+    """Plot firms by AUM range as a bar chart"""
+    if df.empty:
+        return "No data to display for Firms by AUM Range."
+    fig = px.bar(df, x='AUM Range', y='Count', title='Firms by AUM Range (USD)',
+                 labels={'AUM Range': 'Assets Under Management', 'Count': 'Number of Firms'})
+    return fig
+
+def plot_employments_over_time(df):
+    """Plot new employments over time as a line chart"""
+    if df.empty:
+        return "No data to display for Employments Over Time."
+    fig = px.line(df, x='Year', y='New Employments', title='New Employments Over Time',
+                  labels={'Year': 'Year', 'New Employments': 'Number of New Employments'})
+    fig.update_traces(mode='lines+markers')
+    return fig
+
+def get_location_distribution(data_list, location_key):
+    """Generic function to get location distribution"""
+    locations = [safe_get(item, location_key) for item in data_list if safe_get(item, location_key) != 'Unknown']
+    location_counts = pd.Series(locations).value_counts().reset_index()
+    location_counts.columns = ['Location', 'Count']
+    return location_counts
+
+def plot_location_distribution(df, title_suffix):
+    """Generic function to plot location distribution as a bar chart"""
+    if df.empty:
+        return f"No data to display for {title_suffix} Location Distribution."
+    fig = px.bar(df, x='Location', y='Count', title=f'{title_suffix} Location Distribution',
+                 labels={'Location': 'Location', 'Count': 'Number of Entities'})
+    fig.update_layout(xaxis_tickangle=-45)
+    return fig
+
+# --- Main Streamlit App ---
+def main():
+    st.sidebar.title("Navigation")
+    
+    # User API Key input for Gemini
+    if not GENAI_AVAILABLE:
+        st.warning("`google.generativeai` library not found. Gemini features will be disabled.")
+        gemini_api_key = None
+    else:
+        gemini_api_key = st.sidebar.text_input("Enter your Gemini API Key:", type="password", help="Required for AI features (e.g., data extraction). Get one at Google AI Studio.")
+        
+    gemini_model = None
+    if gemini_api_key:
+        with st.spinner("Configuring Gemini..."):
+            gemini_model = setup_gemini(gemini_api_key)
+            if gemini_model:
+                st.sidebar.success("Gemini configured!")
+            else:
+                st.sidebar.error("Failed to configure Gemini. Check your API key or try again.")
+    else:
+        st.sidebar.info("Enter Gemini API Key to enable AI features.")
+
+    # Initialize session state for all data
     initialize_session_state()
     
-    # Tag all existing profiles for Asia classification
-    if 'asia_tagged' not in st.session_state:
-        log_user_action("ASIA_TAGGING_START", "Starting Asia classification for existing profiles")
-        asia_people_count, asia_firms_count = tag_all_existing_profiles()
-        save_data()  # Save the Asia tags
-        st.session_state.asia_tagged = True
-        log_user_action("ASIA_TAGGING_COMPLETE", f"Tagged {asia_people_count} Asia people and {asia_firms_count} Asia firms")
-        
-    log_user_action("APP_INIT_COMPLETE", f"Application initialized successfully with {len(st.session_state.people)} people, {len(st.session_state.firms)} firms")
-        
-except Exception as init_error:
-    log_user_action("APP_INIT_ERROR", f"Initialization failed: {init_error}")
-    st.error(f"Initialization error: {init_error}")
-    st.stop()
-
-# --- HEADER ---
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.title("Asian Hedge Fund Talent Network")
-    st.markdown("**Professional intelligence platform for Asia's financial industry**")
-    
-    # Show Asia-specific statistics
-    asia_people_count = len(get_asia_people())
-    asia_firms_count = len(get_asia_firms())
-    total_people = len(st.session_state.people)
-    total_firms = len(st.session_state.firms)
-    
-    if asia_people_count > 0 or asia_firms_count > 0:
-        st.caption(f"🌏 Asia Focus: {asia_people_count}/{total_people} people • {asia_firms_count}/{total_firms} firms")
-
-with col2:
-    # CSV Export
-    csv_data, filename = export_to_csv()
-    if csv_data:
-        st.download_button(
-            "Export CSV",
-            csv_data,
-            filename,
-            "text/csv",
-            use_container_width=True
-        )
-
-# --- SIDEBAR: Data Extraction ---
-with st.sidebar:
-    st.title("Data Extraction")
-    
-    # API Key Setup
-    api_key = None
-    try:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-        if api_key:
-            st.success("API key loaded")
-    except:
-        pass
-    
-    if not api_key:
-        api_key = st.text_input("Gemini API Key", type="password")
-    
-    # Setup model
-    model = None
-    if api_key and GENAI_AVAILABLE:
-        model = setup_gemini(api_key)
-        
-        st.markdown("---")
-        st.subheader("Extract from Content")
-        
-        input_method = st.radio("Input method:", ["Text", "File"])
-        
-        newsletter_text = ""
-        if input_method == "Text":
-            newsletter_text = st.text_area("Content:", height=150, 
-                                         placeholder="Paste content here...")
+    # Sidebar for data management
+    st.sidebar.header("Data Management")
+    if st.sidebar.button("💾 Save All Data"):
+        if save_data():
+            st.sidebar.success("All data saved!")
         else:
-            uploaded_file = st.file_uploader("Upload file:", type=['txt'])
-            if uploaded_file:
-                try:
-                    success, content, error_msg, encoding_used = load_file_content_enhanced(uploaded_file)
-                    
-                    if success:
-                        newsletter_text = content
-                        st.success(f"File loaded ({len(newsletter_text):,} characters)")
-                        
-                        if error_msg:
-                            st.warning(error_msg)
-                    else:
-                        st.error(error_msg)
-                        
-                except Exception as file_error:
-                    st.error(f"Error loading file: {str(file_error)}")
+            st.sidebar.error("Error saving data.")
+    
+    if st.sidebar.button("🔄 Reload Data"):
+        initialize_session_state()
+        st.sidebar.success("Data reloaded!")
 
-        # Extract button
-        if st.button("Start Extraction", use_container_width=True):
-            if not newsletter_text.strip():
-                log_user_action("EXTRACTION_ERROR", "Attempted extraction with empty content")
-                st.error("Please provide content")
-            elif not model:
-                log_user_action("EXTRACTION_ERROR", "Attempted extraction without API key")
-                st.error("Please provide API key")
+    st.sidebar.header("Data Export")
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("Export to Excel"):
+            excel_output, msg = export_data_to_excel(
+                st.session_state.people, 
+                st.session_state.firms, 
+                st.session_state.employments,
+                [m for f in st.session_state.firms for m in f.get('performance_metrics', [])]
+            )
+            if excel_output:
+                st.download_button(
+                    label="Download Excel",
+                    data=excel_output,
+                    file_name="hedge_fund_data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="excel_download_button"
+                )
+                st.success(msg)
             else:
-                # Start background processing
-                log_user_action("EXTRACTION_START", f"Starting extraction with {len(newsletter_text)} characters using model {model.model_id}")
+                st.error(msg)
+
+    with col2:
+        if st.button("Export to JSON (ZIP)"):
+            json_zip_output, msg = export_data_to_json_zip(
+                st.session_state.people, 
+                st.session_state.firms, 
+                st.session_state.employments,
+                [m for f in st.session_state.firms for m in f.get('performance_metrics', [])]
+            )
+            if json_zip_output:
+                st.download_button(
+                    label="Download JSON (ZIP)",
+                    data=json_zip_output,
+                    file_name="hedge_fund_data.zip",
+                    mime="application/zip",
+                    key="json_zip_download_button"
+                )
+                st.success(msg)
+            else:
+                st.error(msg)
+
+    st.sidebar.header("Global Search")
+    st.session_state.global_search = st.sidebar.text_input("Search people, firms, etc.", st.session_state.global_search)
+    
+    if st.session_state.global_search:
+        st.subheader(f"Search Results for '{st.session_state.global_search}'")
+        search_people, search_firms, search_metrics = enhanced_global_search(st.session_state.global_search)
+        
+        if search_people:
+            st.markdown("#### Matching People")
+            for person in search_people:
+                st.write(f"**{safe_get(person, 'name')}** - {safe_get(person, 'current_title')} at {safe_get(person, 'current_company_name')} ({safe_get(person, 'location')})")
+        else:
+            st.info("No matching people found.")
+        
+        if search_firms:
+            st.markdown("#### Matching Firms")
+            for firm in search_firms:
+                st.write(f"**{safe_get(firm, 'name')}** - {safe_get(firm, 'strategy')} ({safe_get(firm, 'location')}, AUM: {safe_get(firm, 'aum')})")
+        else:
+            st.info("No matching firms found.")
+            
+        if search_metrics:
+            st.markdown("#### Matching Performance Metrics")
+            for metric in search_metrics:
+                st.write(f"**{safe_get(metric, 'fund_name')}**: {safe_get(metric, 'metric_type')} - {safe_get(metric, 'value')} ({safe_get(metric, 'period')} {safe_get(metric, 'date')})")
+        else:
+            st.info("No matching metrics found.")
+        
+        # Clear selected entities to avoid confusion with search results
+        st.session_state.selected_person_id = None
+        st.session_state.selected_firm_id = None
+        
+    else:
+        # Main content area
+        st.title("🏢 Asian Hedge Fund Talent Mapper")
+
+        st.markdown("""
+        This application helps you map and analyze talent and firms within the Asian hedge fund industry.
+        You can extract data from text, manage profiles, and visualize key insights.
+        """)
+
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "👤 People", 
+            "🏢 Firms", 
+            "📜 Employment History", 
+            "📊 Analytics", 
+            "🧠 AI Extraction", 
+            "🛠️ Debug & Utils"
+        ])
+
+        with tab1:
+            st.header("👤 People Profiles")
+            if st.button("➕ Add New Person"):
+                st.session_state.show_add_person_modal = True
+
+            people_df = pd.DataFrame(st.session_state.people)
+            if not people_df.empty:
+                # Add a 'Details' button column
+                people_df['Actions'] = [f"Details_{i}" for i in range(len(people_df))]
                 
-                st.session_state.background_processing = {
-                    'is_running': True,
-                    'progress': 0,
-                    'status_message': 'Starting extraction...',
-                    'results': {'people': [], 'performance': []}
-                }
+                # Reorder columns to put Actions first for better visibility
+                cols = ['Actions'] + [col for col in people_df.columns if col != 'Actions']
+                people_df = people_df[cols]
+
+                # Select columns to display
+                display_cols = ['Actions', 'name', 'current_title', 'current_company_name', 'location', 'expertise', 'created_date']
+                st.dataframe(people_df[display_cols], use_container_width=True, hide_index=True)
                 
-                with st.spinner("Extracting data..."):
-                    try:
-                        people, performance = process_extraction_with_rate_limiting(newsletter_text, model)
+                # Handle details button clicks
+                for i, row in people_df.iterrows():
+                    if st.button("View/Edit Details", key=f"details_person_{row['id']}"):
+                        st.session_state.selected_person_id = row['id']
+                        st.session_state.current_view = 'person_detail'
+                        st.rerun()
+
+            else:
+                st.info("No people profiles added yet.")
+
+        with tab2:
+            st.header("🏢 Firm Profiles")
+            if st.button("➕ Add New Firm"):
+                st.session_state.show_add_firm_modal = True
+
+            firms_df = pd.DataFrame(st.session_state.firms)
+            if not firms_df.empty:
+                firms_df['Actions'] = [f"Details_{i}" for i in range(len(firms_df))]
+                cols = ['Actions'] + [col for col in firms_df.columns if col != 'Actions']
+                firms_df = firms_df[cols]
+
+                display_cols = ['Actions', 'name', 'firm_type', 'location', 'aum', 'strategy', 'founded']
+                st.dataframe(firms_df[display_cols], use_container_width=True, hide_index=True)
+                
+                for i, row in firms_df.iterrows():
+                    if st.button("View/Edit Details", key=f"details_firm_{row['id']}"):
+                        st.session_state.selected_firm_id = row['id']
+                        st.session_state.current_view = 'firm_detail'
+                        st.rerun()
+            else:
+                st.info("No firm profiles added yet.")
+
+        with tab3:
+            st.header("📜 Employment History")
+            employments_df = pd.DataFrame(st.session_state.employments)
+            if not employments_df.empty:
+                # Merge with people data to show names
+                merged_df = pd.merge(employments_df, 
+                                     pd.DataFrame(st.session_state.people)[['id', 'name']], 
+                                     left_on='person_id', 
+                                     right_on='id', 
+                                     suffixes=('', '_person_name'))
+                merged_df['start_date'] = pd.to_datetime(merged_df['start_date']).dt.date
+                merged_df['end_date'] = merged_df['end_date'].apply(lambda x: pd.to_datetime(x).dt.date if x else 'Present')
+                
+                display_cols = ['name', 'company_name', 'title', 'start_date', 'end_date', 'location', 'strategy']
+                st.dataframe(merged_df[display_cols], use_container_width=True)
+            else:
+                st.info("No employment history added yet.")
+
+        with tab4:
+            st.header("📊 Data Analytics & Visualizations")
+            
+            st.subheader("Firm Strategy Distribution")
+            firm_strategy_df = get_firm_strategy_distribution()
+            fig_firm_strategy = plot_firm_strategy_distribution(firm_strategy_df)
+            if isinstance(fig_firm_strategy, str):
+                st.info(fig_firm_strategy)
+            else:
+                st.plotly_chart(fig_firm_strategy, use_container_width=True)
+                
+            st.subheader("People Expertise Distribution")
+            people_expertise_df = get_people_expertise_distribution()
+            fig_people_expertise = plot_people_expertise_distribution(people_expertise_df)
+            if isinstance(fig_people_expertise, str):
+                st.info(fig_people_expertise)
+            else:
+                st.plotly_chart(fig_people_expertise, use_container_width=True)
+            
+            st.subheader("Firms by AUM Range")
+            firms_aum_df = get_firms_by_aum_range()
+            fig_firms_aum = plot_firms_by_aum_range(firms_aum_df)
+            if isinstance(fig_firms_aum, str):
+                st.info(fig_firms_aum)
+            else:
+                st.plotly_chart(fig_firms_aum, use_container_width=True)
+            
+            st.subheader("New Employments Over Time")
+            employments_time_df = get_employments_over_time()
+            fig_employments_time = plot_employments_over_time(employments_time_df)
+            if isinstance(fig_employments_time, str):
+                st.info(fig_employments_time)
+            else:
+                st.plotly_chart(fig_employments_time, use_container_width=True)
+
+            # Location distributions
+            st.subheader("Location Distributions")
+            
+            person_location_df = get_location_distribution(st.session_state.people, 'location')
+            fig_person_location = plot_location_distribution(person_location_df, 'Person')
+            if isinstance(fig_person_location, str):
+                st.info(fig_person_location)
+            else:
+                st.plotly_chart(fig_person_location, use_container_width=True)
+
+            firm_location_df = get_location_distribution(st.session_state.firms, 'location')
+            fig_firm_location = plot_location_distribution(firm_location_df, 'Firm')
+            if isinstance(fig_firm_location, str):
+                st.info(fig_firm_location)
+            else:
+                st.plotly_chart(fig_firm_location, use_container_width=True)
+
+        with tab5:
+            st.header("🧠 AI Data Extraction")
+            st.markdown("""
+            Paste raw text (e.g., news articles, LinkedIn profiles, deal announcements) below 
+            to automatically extract financial professionals and performance data.
+            """)
+            
+            if not gemini_model:
+                st.warning("Please enter your Gemini API Key in the sidebar to enable AI extraction features.")
+            
+            extraction_text = st.text_area("Paste text for extraction:", height=300)
+            
+            if st.button("🚀 Start Extraction", disabled=not gemini_model or not extraction_text.strip()):
+                if gemini_model and extraction_text.strip():
+                    with st.spinner("Extracting data with AI... This may take a moment."):
+                        st.session_state.background_processing['is_running'] = True
+                        st.session_state.background_processing['status_message'] = "Starting AI extraction..."
+                        st.session_state.background_processing['progress'] = 0
                         
-                        st.session_state.background_processing = {
-                            'is_running': False,
-                            'progress': 100,
-                            'status_message': f'Complete: {len(people)} people, {len(performance)} metrics',
-                            'results': {'people': people, 'performance': performance}
-                        }
+                        # Use a thread for background processing
+                        q = queue.Queue()
+                        thread = threading.Thread(target=_run_extraction_in_background, args=(extraction_text, gemini_model, q))
+                        thread.start()
                         
-                        log_user_action("EXTRACTION_SUCCESS", f"Extraction complete: {len(people)} people, {len(performance)} metrics found")
-                        st.success(f"Extraction complete! Found {len(people)} people and {len(performance)} metrics")
-                        
-                    except Exception as e:
-                        log_user_action("EXTRACTION_ERROR", f"Extraction failed: {e}")
-                        st.error(f"Extraction failed: {e}")
+                        while thread.is_alive() or not q.empty():
+                            try:
+                                result = q.get(timeout=0.1)
+                                if isinstance(result, dict) and 'progress' in result:
+                                    st.session_state.background_processing.update(result)
+                                else:
+                                    st.session_state.background_processing['results'] = result
+                                    break
+                            except queue.Empty:
+                                pass # No updates yet, keep spinning
+                            time.sleep(0.1) # Update UI frequently
+
                         st.session_state.background_processing['is_running'] = False
+                        st.session_state.background_processing['progress'] = 100
+                        st.session_state.background_processing['status_message'] = "AI extraction complete!"
+                        
+                        extracted_people = st.session_state.background_processing['results'][0]
+                        extracted_performance = st.session_state.background_processing['results'][1]
+                        
+                        st.success("Extraction Complete!")
+                        st.markdown(f"**Extracted {len(extracted_people)} people and {len(extracted_performance)} performance metrics.**")
+                        
+                        if extracted_people:
+                            st.subheader("Extracted People")
+                            extracted_people_df = pd.DataFrame(extracted_people)
+                            st.dataframe(extracted_people_df, use_container_width=True)
+                            
+                            # Option to add to database
+                            if st.button("✅ Add Extracted People to Database"):
+                                # Perform duplicate checking before adding
+                                new_people_to_add = []
+                                for person in extracted_people:
+                                    existing = find_existing_person_strict(
+                                        safe_get(person, 'name'), 
+                                        safe_get(person, 'current_company')
+                                    )
+                                    if not existing:
+                                        new_people_to_add.append(person)
+                                    else:
+                                        st.warning(f"Skipped potential duplicate: {safe_get(person, 'name')} at {safe_get(person, 'current_company')} (matches existing ID: {existing['id']})")
+                                
+                                if new_people_to_add:
+                                    for person_data in new_people_to_add:
+                                        add_person(person_data)
+                                    st.success(f"Added {len(new_people_to_add)} unique people to the database!")
+                                else:
+                                    st.info("No unique people to add after duplicate check.")
+                                st.rerun()
 
-    elif not GENAI_AVAILABLE:
-        st.error("Please install: pip install google-generativeai")
-    
-    # --- DUPLICATE DETECTION TESTING SECTION ---
-    if st.checkbox("🔍 Test Duplicate Detection", help="Debug and test duplicate detection logic"):
-        st.markdown("---")
-        st.subheader("🧪 Duplicate Detection Testing")
-        
-        # Run tests
-        if st.button("Run Duplicate Tests"):
-            test_results = test_duplicate_detection()
-            
-            passed_tests = [r for r in test_results if r['passed']]
-            failed_tests = [r for r in test_results if not r['passed']]
-            
-            if failed_tests:
-                st.error(f"❌ {len(failed_tests)} tests failed:")
-                for test in failed_tests:
-                    st.write(f"• {test['test']}")
-                    st.write(f"  Expected: {test['expected']}, Got: {test['actual']}")
-                    st.write(f"  Keys: {test['key1']} vs {test['key2']}")
-            else:
-                st.success(f"✅ All {len(test_results)} tests passed!")
-        
-        # Show current database keys
-        if st.button("Show Database Keys"):
-            keys = debug_person_keys()
-            if keys:
-                st.write("**Current person keys in database:**")
-                for key_info in keys:
-                    st.write(f"• `{key_info['key']}` - {key_info['name']} at {key_info['company']}")
-            else:
-                st.write("No people in database")
-        
-        # Manual duplicate test
-        st.markdown("**Manual Duplicate Test:**")
-        test_name = st.text_input("Test Name:", value="John Smith")
-        test_company = st.text_input("Test Company:", value="Goldman Sachs")
-        
-        if st.button("Check for Duplicate"):
-            if test_name and test_company:
-                existing = find_existing_person_strict(test_name, test_company)
-                test_key = create_person_key(test_name, test_company)
-                
-                if existing:
-                    st.error(f"🚫 DUPLICATE FOUND: {safe_get(existing, 'name')} at {safe_get(existing, 'current_company_name')}")
+                        if extracted_performance:
+                            st.subheader("Extracted Performance Metrics")
+                            extracted_performance_df = pd.DataFrame(extracted_performance)
+                            st.dataframe(extracted_performance_df, use_container_width=True)
+                            
+                            # Option to link to firms
+                            st.markdown("##### Link Performance Metrics to Firms")
+                            for metric in extracted_performance:
+                                firm_name_for_metric = safe_get(metric, 'fund_name')
+                                firm_options = [f.get('name') for f in st.session_state.firms]
+                                
+                                # Try to pre-select if there's a good match
+                                initial_selection = None
+                                if firm_name_for_metric:
+                                    for opt in firm_options:
+                                        if normalize_company(firm_name_for_metric) == normalize_company(opt):
+                                            initial_selection = opt
+                                            break
+                                
+                                selected_firm_name = st.selectbox(
+                                    f"Link '{firm_name_for_metric}' performance to which firm?",
+                                    options=['Select Firm'] + firm_options,
+                                    index=firm_options.index(initial_selection) + 1 if initial_selection else 0,
+                                    key=f"link_perf_{metric['id']}"
+                                )
+                                
+                                if selected_firm_name and selected_firm_name != 'Select Firm':
+                                    firm_to_link = get_firm_by_name(selected_firm_name)
+                                    if firm_to_link:
+                                        if st.button(f"Add Metric to {selected_firm_name}", key=f"add_metric_{metric['id']}"):
+                                            if add_performance_metric_to_firm(firm_to_link['id'], 
+                                                                               safe_get(metric, 'metric_type'), 
+                                                                               safe_get(metric, 'value'), 
+                                                                               safe_get(metric, 'period'), 
+                                                                               safe_get(metric, 'date')):
+                                                st.success(f"Added performance metric to {selected_firm_name}!")
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Failed to add metric to {selected_firm_name}.")
+                                    else:
+                                        st.warning(f"Could not find firm '{selected_firm_name}' for linking.")
                 else:
-                    st.success(f"✅ NO DUPLICATE: Safe to add")
-                
-                st.info(f"Generated key: `{test_key}`")
-    
-    # Show extraction results for review
-    if st.session_state.background_processing.get('results', {}).get('people') or st.session_state.background_processing.get('results', {}).get('performance'):
-        st.markdown("---")
-        st.subheader("Review Results")
-        
-        results = st.session_state.background_processing['results']
-        people_results = results.get('people', [])
-        performance_results = results.get('performance', [])
-        
-        if people_results:
-            st.markdown(f"**People ({len(people_results)})**")
+                    st.error("AI extraction requires a valid Gemini API key and text input.")
             
-            # REAL-TIME duplicate checking with visual feedback
-            valid_people = []
-            duplicate_people = []
+            # Display background processing status
+            if st.session_state.background_processing['is_running']:
+                st.info(f"Background process: {st.session_state.background_processing['status_message']} "
+                        f"({st.session_state.background_processing['progress']}%)")
             
-            for i, person in enumerate(people_results[:5]):  # Show first 5
-                name = safe_get(person, 'name', '').strip()
-                company = person.get('current_company', person.get('company', '')).strip()
-                
-                # Real-time duplicate check
-                existing_person = find_existing_person_strict(name, company)
-                person_key = create_person_key(name, company)
-                
-                with st.container(border=True):
-                    col1, col2 = st.columns([3, 1])
-                    
-                    with col1:
-                        if existing_person:
-                            st.error(f"🚫 **DUPLICATE**: {name}")
-                            st.caption(f"❌ {safe_get(person, 'current_title')} at {company}")
-                            st.caption(f"🔑 Key: `{person_key}`")
-                            st.caption(f"Matches: {safe_get(existing_person, 'name')} at {safe_get(existing_person, 'current_company_name')}")
-                            duplicate_people.append(person)
-                        else:
-                            st.success(f"✅ **NEW**: {name}")
-                            st.caption(f"✓ {safe_get(person, 'current_title')} at {company}")
-                            st.caption(f"🔑 Key: `{person_key}`")
-                            valid_people.append(person)
-                    
-                    with col2:
-                        if existing_person:
-                            st.error("BLOCKED")
-                        else:
-                            st.success("ALLOWED")
+        with tab6:
+            st.header("🛠️ Debugging and Utilities")
             
-            # Show summary
-            if len(people_results) > 5:
-                st.info(f"Showing 5 of {len(people_results)} people. Click 'Save All' to process all.")
+            st.subheader("Duplicate Detection Test")
+            if st.button("Run Duplicate Detection Test"):
+                test_results = test_duplicate_detection()
+                st.json(test_results)
             
-            st.markdown(f"**Summary**: {len(valid_people)} new, {len(duplicate_people)} duplicates blocked")
-        
-        if performance_results:
-            st.markdown(f"**Metrics ({len(performance_results)})**")
-            for i, metric in enumerate(performance_results[:2]):  # Show first 2
-                with st.container(border=True):
-                    st.caption(f"**{safe_get(metric, 'fund_name')}**")
-                    st.caption(f"{safe_get(metric, 'metric_type')}: {safe_get(metric, 'value')}")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Save All", use_container_width=True):
-                # First, remove internal duplicates from extraction data
-                unique_people, internal_duplicates = check_for_duplicates_in_extraction(people_results)
-                
+            st.subheader("All Person Keys")
+            if st.button("Show All Person Keys"):
+                person_keys = debug_person_keys()
+                st.json(person_keys)
+
+            st.subheader("Internal Duplicate Check (Last Extraction)")
+            # This would normally run on extracted data, but for debug, we'll use existing people
+            if st.button("Check Existing People for Internal Duplicates"):
+                unique, internal_duplicates = check_for_duplicates_in_extraction(st.session_state.people)
                 if internal_duplicates:
-                    st.warning(f"⚠️ Removed {len(internal_duplicates)} internal duplicates from extraction")
-                
-                # Now process unique people with strict duplicate checking
-                saved_count = 0
-                blocked_count = 0
-                invalid_count = 0
-                blocked_details = []
-                
-                for person_data in unique_people:
-                    name = safe_get(person_data, 'name', '').strip()
-                    company_name = person_data.get('current_company', person_data.get('company', '')).strip()
-                    
-                    # Debug logging
-                    st.write(f"🔍 **Processing**: {name} at {company_name}")
-                    
-                    # Validate required fields
-                    if not name or not company_name or name == 'Unknown' or company_name == 'Unknown':
-                        invalid_count += 1
-                        st.write(f"  ❌ **Invalid**: Missing name or company")
-                        continue
-                    
-                    # STRICT duplicate check - block if exists
-                    existing_person = find_existing_person_strict(name, company_name)
-                    person_key = create_person_key(name, company_name)
-                    
-                    st.write(f"  🔑 **Key**: `{person_key}`")
-                    
-                    if existing_person:
-                        blocked_count += 1
-                        blocked_details.append(f"• {name} at {company_name} (Key: {person_key})")
-                        st.write(f"  🚫 **BLOCKED**: Duplicate found - {safe_get(existing_person, 'name')} at {safe_get(existing_person, 'current_company_name')}")
-                        logger.warning(f"BLOCKED DUPLICATE: {name} at {company_name} - already exists")
-                        continue
-                    
-                    st.write(f"  ✅ **CREATING**: New person")
-                    
-                    # Only create if no duplicate exists
-                    new_person_id = str(uuid.uuid4())
-                    
-                    new_person = {
-                        "id": new_person_id,
-                        "name": name,
-                        "current_title": safe_get(person_data, 'current_title', 'Unknown'),
-                        "current_company_name": company_name,
-                        "location": safe_get(person_data, 'location', 'Unknown'),
-                        "email": "",
-                        "phone": "",
-                        "education": "",
-                        "expertise": safe_get(person_data, 'expertise', 'Unknown'),
-                        "aum_managed": "",
-                        "strategy": "",
-                        "created_date": datetime.now().isoformat(),
-                        "last_updated": datetime.now().isoformat(),
-                        "context_mentions": [{
-                            'id': str(uuid.uuid4()),
-                            'timestamp': datetime.now().isoformat(),
-                            'type': 'mention',
-                            'content': f"Discovered via data extraction",
-                            'source': 'Data Extraction',
-                            'date_added': datetime.now().isoformat()
-                        }]
-                    }
-                    
-                    # FINAL SAFETY CHECK before adding to database
-                    final_check = find_existing_person_strict(new_person['name'], new_person['current_company_name'])
-                    if final_check:
-                        st.write(f"  ⚠️ **FINAL CHECK BLOCKED**: Duplicate detected just before save!")
-                        blocked_count += 1
-                        continue
-                    
-                    st.session_state.people.append(new_person)
-                    st.write(f"  ✅ **ADDED TO DATABASE**: Successfully created")
-                    
-                    # Tag as Asia-based
-                    tag_profile_as_asia(new_person, 'person')
-                    
-                    # Add firm if doesn't exist
-                    if not get_firm_by_name(company_name):
-                        new_firm = {
-                            "id": str(uuid.uuid4()),
-                            "name": company_name,
-                            "firm_type": "Unknown",
-                            "location": safe_get(person_data, 'location', 'Unknown'),
-                            "headquarters": "Unknown",
-                            "aum": "Unknown",
-                            "founded": None,
-                            "strategy": "Unknown",
-                            "website": "",
-                            "description": "",
-                            "performance_metrics": [],
-                            "created_date": datetime.now().isoformat(),
-                            "last_updated": datetime.now().isoformat(),
-                            "context_mentions": []
-                        }
-                        st.session_state.firms.append(new_firm)
-                        
-                        # Tag firm as Asia-based
-                        tag_profile_as_asia(new_firm, 'firm')
-                    
-                    # Add employment record
-                    add_employment_with_dates(
-                        new_person_id, company_name, 
-                        safe_get(person_data, 'current_title', 'Unknown'), 
-                        date.today(), None,
-                        safe_get(person_data, 'location', 'Unknown'), 
-                        safe_get(person_data, 'expertise', 'Unknown')
-                    )
-                    
-                    saved_count += 1
-                
-                save_data()
-                
-                # Show detailed results
-                if saved_count > 0:
-                    st.success(f"✅ Successfully saved {saved_count} new people!")
-                
-                if blocked_count > 0:
-                    st.error(f"🚫 Blocked {blocked_count} duplicates (already exist):")
-                    with st.expander("View blocked duplicates"):
-                        for detail in blocked_details:
-                            st.write(detail)
-                
-                if invalid_count > 0:
-                    st.warning(f"⚠️ Skipped {invalid_count} invalid entries (missing name/company)")
-                
-                if len(internal_duplicates) > 0:
-                    st.info(f"🔄 Removed {len(internal_duplicates)} internal duplicates from extraction")
-                
-                # Clear results
-                st.session_state.background_processing['results'] = {'people': [], 'performance': []}
-                st.rerun()
-        
-        with col2:
-            if st.button("Discard", use_container_width=True):
-                st.session_state.background_processing['results'] = {'people': [], 'performance': []}
-                st.rerun()
-
-# --- MAIN CONTENT AREA ---
-
-# Global Search Bar
-col1, col2 = st.columns([4, 1])
-
-with col1:
-    search_query = st.text_input(
-        "Search people, firms...", 
-        value=st.session_state.global_search,
-        placeholder="Search by name, company, title...",
-        key="main_search_input"
-    )
-
-with col2:
-    if st.button("Search", use_container_width=True) or search_query != st.session_state.global_search:
-        st.session_state.global_search = search_query
-        if search_query and len(search_query.strip()) >= 2:
-            log_user_action("SEARCH", f"User searched for: '{search_query}'")
-            st.rerun()
-        elif search_query != st.session_state.global_search:
-            log_user_action("SEARCH_CLEAR", "User cleared search")
-            st.rerun()
-
-# Handle global search results
-if st.session_state.global_search and len(st.session_state.global_search.strip()) >= 2:
-    search_query = st.session_state.global_search
-    matching_people, matching_firms, matching_metrics = enhanced_global_search(search_query)
-    
-    if matching_people or matching_firms:
-        st.markdown("### Search Results")
-        
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col1:
-            st.metric("People", len(matching_people))
-        with col2:
-            st.metric("Firms", len(matching_firms))
-        with col3:
-            if st.button("Clear Search"):
-                st.session_state.global_search = ""
-                st.rerun()
-        
-        # Show search results in tiles
-        if matching_people:
-            st.markdown("**People Found**")
-            cols = st.columns(3)
-            for i, person in enumerate(matching_people):
-                with cols[i % 3]:
-                    with st.container(border=True):
-                        st.markdown(f"**{safe_get(person, 'name')}**")
-                        st.caption(f"{safe_get(person, 'current_title')}")
-                        st.caption(f"{safe_get(person, 'current_company_name')}")
-                        st.caption(f"📍 {safe_get(person, 'location')}")
-                        
-                        if st.button("View", key=f"search_person_{person['id']}", use_container_width=True):
-                            go_to_person_details(person['id'])
-                            st.rerun()
-        
-        if matching_firms:
-            st.markdown("**Firms Found**")
-            cols = st.columns(3)
-            for i, firm in enumerate(matching_firms):
-                with cols[i % 3]:
-                    with st.container(border=True):
-                        st.markdown(f"**{safe_get(firm, 'name')}**")
-                        st.caption(f"{safe_get(firm, 'firm_type')}")
-                        st.caption(f"📍 {safe_get(firm, 'location')}")
-                        
-                        if st.button("View", key=f"search_firm_{firm['id']}", use_container_width=True):
-                            go_to_firm_details(firm['id'])
-                            st.rerun()
-        
-        st.markdown("---")
-
-# Top Navigation
-col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 2])
-
-with col1:
-    if st.button("People", use_container_width=True, 
-                 type="primary" if st.session_state.current_view == 'people' else "secondary"):
-        go_to_people()
-        st.rerun()
-
-with col2:
-    if st.button("Firms", use_container_width=True, 
-                 type="primary" if st.session_state.current_view == 'firms' else "secondary"):
-        go_to_firms()
-        st.rerun()
-
-with col3:
-    if st.button("Add Person", use_container_width=True):
-        st.session_state.show_add_person_modal = True
-        st.rerun()
-
-with col4:
-    if st.button("Add Firm", use_container_width=True):
-        st.session_state.show_add_firm_modal = True
-        st.rerun()
-
-with col5:
-    # Quick stats with Asia breakdown
-    col5a, col5b, col5c = st.columns(3)
-    with col5a:
-        asia_people = len(get_asia_people())
-        total_people = len(st.session_state.people)
-        st.metric("People", f"{total_people}", delta=f"{asia_people} Asia")
-    with col5b:
-        asia_firms = len(get_asia_firms())
-        total_firms = len(st.session_state.firms)
-        st.metric("Firms", f"{total_firms}", delta=f"{asia_firms} Asia")
-    with col5c:
-        if asia_people > 0:
-            asia_percentage = round((asia_people / total_people) * 100) if total_people > 0 else 0
-            st.metric("Asia %", f"{asia_percentage}%")
-
-# --- MAIN VIEWS ---
-
-if st.session_state.current_view == 'people':
-    st.markdown("---")
-    st.header("Financial Professionals")
-    
-    if not st.session_state.people:
-        st.info("No people added yet. Use 'Add Person' button above or extract from content.")
-    else:
-        # Prioritize Asia profiles - show Asia first, then others
-        asia_people = get_asia_people()
-        non_asia_people = get_non_asia_people()
-        
-        # Show Asia section first
-        if asia_people:
-            st.subheader(f"🌏 Asia-Based Professionals ({len(asia_people)})")
-            
-            # Display Asia people in square tile grid (3 columns)
-            for i in range(0, len(asia_people), 3):
-                cols = st.columns(3)
-                for j, col in enumerate(cols):
-                    if i + j < len(asia_people):
-                        person = asia_people[i + j]
-                        
-                        with col:
-                            # Square-like tile container with Asia indicator
-                            with st.container(border=True):
-                                st.markdown(f"**{safe_get(person, 'name')}** 🌏")
-                                st.caption(f"{safe_get(person, 'current_title')}")
-                                st.caption(f"Company: {safe_get(person, 'current_company_name')}")
-                                st.caption(f"📍 {safe_get(person, 'location')}")
-                                
-                                expertise = safe_get(person, 'expertise')
-                                if expertise != 'Unknown':
-                                    st.caption(f"🎯 {expertise}")
-                                
-                                # Shared work connections
-                                shared_history = get_shared_work_history(person['id'])
-                                if shared_history:
-                                    strong_connections = len([c for c in shared_history if c.get('connection_strength') == 'Strong'])
-                                    st.caption(f"🔗 {len(shared_history)} connections ({strong_connections} strong)")
-                                
-                                # Action buttons
-                                col_view, col_edit = st.columns(2)
-                                with col_view:
-                                    if st.button("View", key=f"view_asia_person_{person['id']}", use_container_width=True):
-                                        go_to_person_details(person['id'])
-                                        st.rerun()
-                                with col_edit:
-                                    if st.button("Edit", key=f"edit_asia_person_{person['id']}", use_container_width=True):
-                                        st.session_state.edit_person_data = person
-                                        st.session_state.show_edit_person_modal = True
-                                        st.rerun()
-        
-        # Show other regions section
-        if non_asia_people:
-            if asia_people:  # Add separator if we showed Asia section
-                st.markdown("---")
-            
-            st.subheader(f"🌍 Other Regions ({len(non_asia_people)})")
-            
-            # Display non-Asia people in square tile grid (3 columns)
-            for i in range(0, len(non_asia_people), 3):
-                cols = st.columns(3)
-                for j, col in enumerate(cols):
-                    if i + j < len(non_asia_people):
-                        person = non_asia_people[i + j]
-                        
-                        with col:
-                            # Square-like tile container
-                            with st.container(border=True):
-                                st.markdown(f"**{safe_get(person, 'name')}**")
-                                st.caption(f"{safe_get(person, 'current_title')}")
-                                st.caption(f"Company: {safe_get(person, 'current_company_name')}")
-                                st.caption(f"📍 {safe_get(person, 'location')}")
-                                
-                                expertise = safe_get(person, 'expertise')
-                                if expertise != 'Unknown':
-                                    st.caption(f"🎯 {expertise}")
-                                
-                                # Shared work connections
-                                shared_history = get_shared_work_history(person['id'])
-                                if shared_history:
-                                    strong_connections = len([c for c in shared_history if c.get('connection_strength') == 'Strong'])
-                                    st.caption(f"🔗 {len(shared_history)} connections ({strong_connections} strong)")
-                                
-                                # Action buttons
-                                col_view, col_edit = st.columns(2)
-                                with col_view:
-                                    if st.button("View", key=f"view_other_person_{person['id']}", use_container_width=True):
-                                        go_to_person_details(person['id'])
-                                        st.rerun()
-                                with col_edit:
-                                    if st.button("Edit", key=f"edit_other_person_{person['id']}", use_container_width=True):
-                                        st.session_state.edit_person_data = person
-                                        st.session_state.show_edit_person_modal = True
-                                        st.rerun()
-
-elif st.session_state.current_view == 'firms':
-    st.markdown("---")
-    st.header("Financial Institutions")
-    
-    if not st.session_state.firms:
-        st.info("No firms added yet. Use 'Add Firm' button above.")
-    else:
-        # Prioritize Asia profiles - show Asia first, then others
-        asia_firms = get_asia_firms()
-        non_asia_firms = get_non_asia_firms()
-        
-        # Show Asia section first
-        if asia_firms:
-            st.subheader(f"🌏 Asia-Based Institutions ({len(asia_firms)})")
-            
-            # Display Asia firms in square tile grid (3 columns)
-            for i in range(0, len(asia_firms), 3):
-                cols = st.columns(3)
-                for j, col in enumerate(cols):
-                    if i + j < len(asia_firms):
-                        firm = asia_firms[i + j]
-                        people_count = len(get_people_by_firm(safe_get(firm, 'name')))
-                        
-                        with col:
-                            # Square-like tile container with Asia indicator
-                            with st.container(border=True):
-                                st.markdown(f"**{safe_get(firm, 'name')}** 🌏")
-                                st.caption(f"{safe_get(firm, 'firm_type')}")
-                                st.caption(f"📍 {safe_get(firm, 'location')}")
-                                
-                                aum = safe_get(firm, 'aum')
-                                if aum != 'Unknown':
-                                    st.caption(f"💰 {aum}")
-                                
-                                st.caption(f"👥 {people_count} people")
-                                
-                                # Action buttons
-                                col_view, col_edit = st.columns(2)
-                                with col_view:
-                                    if st.button("View", key=f"view_asia_firm_{firm['id']}", use_container_width=True):
-                                        go_to_firm_details(firm['id'])
-                                        st.rerun()
-                                with col_edit:
-                                    if st.button("Edit", key=f"edit_asia_firm_{firm['id']}", use_container_width=True):
-                                        st.session_state.edit_firm_data = firm
-                                        st.session_state.show_edit_firm_modal = True
-                                        st.rerun()
-        
-        # Show other regions section
-        if non_asia_firms:
-            if asia_firms:  # Add separator if we showed Asia section
-                st.markdown("---")
-            
-            st.subheader(f"🌍 Other Regions ({len(non_asia_firms)})")
-            
-            # Display non-Asia firms in square tile grid (3 columns)
-            for i in range(0, len(non_asia_firms), 3):
-                cols = st.columns(3)
-                for j, col in enumerate(cols):
-                    if i + j < len(non_asia_firms):
-                        firm = non_asia_firms[i + j]
-                        people_count = len(get_people_by_firm(safe_get(firm, 'name')))
-                        
-                        with col:
-                            # Square-like tile container
-                            with st.container(border=True):
-                                st.markdown(f"**{safe_get(firm, 'name')}**")
-                                st.caption(f"{safe_get(firm, 'firm_type')}")
-                                st.caption(f"📍 {safe_get(firm, 'location')}")
-                                
-                                aum = safe_get(firm, 'aum')
-                                if aum != 'Unknown':
-                                    st.caption(f"💰 {aum}")
-                                
-                                st.caption(f"👥 {people_count} people")
-                                
-                                # Action buttons
-                                col_view, col_edit = st.columns(2)
-                                with col_view:
-                                    if st.button("View", key=f"view_other_firm_{firm['id']}", use_container_width=True):
-                                        go_to_firm_details(firm['id'])
-                                        st.rerun()
-                                with col_edit:
-                                    if st.button("Edit", key=f"edit_other_firm_{firm['id']}", use_container_width=True):
-                                        st.session_state.edit_firm_data = firm
-                                        st.session_state.show_edit_firm_modal = True
-                                        st.rerun()
-
-elif st.session_state.current_view == 'person_details' and st.session_state.selected_person_id:
-    person = get_person_by_id(st.session_state.selected_person_id)
-    if not person:
-        st.error("Person not found")
-        go_to_people()
-        st.rerun()
-    
-    # Person header with actions
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.header(f"{safe_get(person, 'name')}")
-        st.subheader(f"{safe_get(person, 'current_title')} at {safe_get(person, 'current_company_name')}")
-    with col2:
-        col2a, col2b, col2c = st.columns(3)
-        with col2a:
-            if st.button("← Back"):
-                go_to_people()
-                st.rerun()
-        with col2b:
-            if st.button("Edit"):
-                st.session_state.edit_person_data = person
-                st.session_state.show_edit_person_modal = True
-                st.rerun()
-        with col2c:
-            if st.button("+ Employment"):
-                st.session_state.show_add_employment_modal = True
-                st.rerun()
-    
-    # Basic info
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"**Location:** {safe_get(person, 'location')}")
-        email = safe_get(person, 'email')
-        if email != 'Unknown' and email:
-            st.markdown(f"**Email:** {email}")
-        phone = safe_get(person, 'phone')
-        if phone != 'Unknown' and phone:
-            st.markdown(f"**Phone:** {phone}")
-    
-    with col2:
-        education = safe_get(person, 'education')
-        if education != 'Unknown' and education:
-            st.markdown(f"**Education:** {education}")
-        expertise = safe_get(person, 'expertise')
-        if expertise != 'Unknown' and expertise:
-            st.markdown(f"**Expertise:** {expertise}")
-        aum = safe_get(person, 'aum_managed')
-        if aum != 'Unknown' and aum:
-            st.markdown(f"**AUM Managed:** {aum}")
-    
-    # Employment History
-    st.markdown("---")
-    st.subheader("Employment History")
-    
-    employments = get_employments_by_person_id(person['id'])
-    if employments:
-        sorted_employments = sorted(
-            [emp for emp in employments if emp.get('start_date')], 
-            key=lambda x: x['start_date'], 
-            reverse=True
-        )
-        
-        for emp in sorted_employments:
-            end_date_str = emp['end_date'].strftime("%B %Y") if emp.get('end_date') else "Present"
-            start_date_str = emp['start_date'].strftime("%B %Y") if emp.get('start_date') else "Unknown"
-            
-            # Calculate duration
-            if emp.get('start_date'):
-                end_for_calc = emp['end_date'] if emp.get('end_date') else date.today()
-                duration_days = (end_for_calc - emp['start_date']).days
-                duration_years = duration_days / 365.25
-                
-                if duration_years >= 1:
-                    duration_str = f"{duration_years:.1f} years"
+                    st.warning(f"Found {len(internal_duplicates)} internal duplicates in existing people data:")
+                    for dup in internal_duplicates:
+                        st.write(f"- {safe_get(dup, 'name')} at {safe_get(dup, 'current_company_name')}")
                 else:
-                    duration_str = f"{max(1, duration_days // 30)} months"
-            else:
-                duration_str = "Unknown duration"
-            
-            with st.container(border=True):
-                st.markdown(f"**{safe_get(emp, 'title')}** at **{safe_get(emp, 'company_name')}**")
-                st.caption(f"Duration: {start_date_str} → {end_date_str} ({duration_str})")
-                st.caption(f"Location: {safe_get(emp, 'location')} • Strategy: {safe_get(emp, 'strategy')}")
-    else:
-        st.info("No employment history available.")
-    
-    # Shared Work History
-    st.markdown("---")
-    st.subheader("Shared Work History")
-    
-    shared_history = get_shared_work_history(person['id'])
-    
-    if shared_history:
-        st.write(f"**Found {len(shared_history)} colleagues who worked at the same companies:**")
-        
-        # Summary stats
-        strong_connections = len([c for c in shared_history if c.get('connection_strength') == 'Strong'])
-        medium_connections = len([c for c in shared_history if c.get('connection_strength') == 'Medium'])
-        brief_connections = len([c for c in shared_history if c.get('connection_strength') == 'Brief'])
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Strong (1+ years)", strong_connections)
-        with col2:
-            st.metric("Medium (3+ months)", medium_connections)
-        with col3:
-            st.metric("Brief (<3 months)", brief_connections)
-        
-        # Show connections
-        for connection in shared_history[:5]:  # Show first 5
-            with st.container(border=True):
-                col1, col2, col3 = st.columns([2, 2, 1])
+                    st.info("No internal duplicates found in existing people data.")
+
+            st.subheader("Force Asia Tagging Re-run")
+            if st.button("Run Asia Tagging Now"):
+                asia_people, asia_firms = tag_all_existing_profiles()
+                st.success(f"Re-tagged profiles: {asia_people} Asia people, {asia_firms} Asia firms.")
+                st.rerun() # Rerun to update display
+
+            st.subheader("View Raw Data (Read-Only)")
+            data_view_option = st.selectbox("Select Data to View:", ["People", "Firms", "Employments"])
+            if data_view_option == "People":
+                st.json(st.session_state.people)
+            elif data_view_option == "Firms":
+                st.json(st.session_state.firms)
+            elif data_view_option == "Employments":
+                st.json(st.session_state.employments)
+
+    # Modals for adding/editing
+    if st.session_state.show_add_person_modal:
+        with st.expander("➕ Add New Person", expanded=True):
+            st.markdown("Fill in the details for the new person.")
+            with st.form("add_person_form"):
+                new_person_name = st.text_input("Name*")
+                new_person_title = st.text_input("Current Title")
+                new_person_company = st.text_input("Current Company Name*")
+                new_person_location = st.text_input("Location")
+                new_person_email = st.text_input("Email")
+                new_person_phone = st.text_input("Phone")
+                new_person_education = st.text_input("Education")
+                new_person_expertise = st.text_input("Expertise (comma-separated)")
+                new_person_aum = st.text_input("AUM Managed (e.g., '1.5B USD')")
+                new_person_strategy = st.text_input("Strategy")
                 
-                with col1:
-                    st.markdown(f"**{connection['colleague_name']}**")
-                    st.caption(f"**Shared:** {connection['shared_company']}")
-                    st.caption(f"**Overlap:** {connection['overlap_period']}")
-                
-                with col2:
-                    st.caption(f"**Current:** {connection['colleague_current_title']}")
-                    st.caption(f"at {connection['colleague_current_company']}")
-                
-                with col3:
-                    strength = connection.get('connection_strength', 'Brief')
-                    if strength == "Strong":
-                        st.success("Strong")
-                    elif strength == "Medium":
-                        st.info("Medium")
+                submitted = st.form_submit_button("Add Person")
+                if submitted:
+                    if not new_person_name or not new_person_company:
+                        st.error("Name and Current Company Name are required fields.")
                     else:
-                        st.warning("Brief")
-                    
-                    if st.button("View", key=f"view_colleague_{connection['colleague_id']}", use_container_width=True):
-                        go_to_person_details(connection['colleague_id'])
-                        st.rerun()
-        
-        if len(shared_history) > 5:
-            st.info(f"Showing top 5 of {len(shared_history)} total connections")
-    else:
-        st.info("No shared work history found with other people in the database.")
-    
-    # Context/News Section
-    st.markdown("---")
-    st.subheader("Context & News")
-    
-    context_mentions = person.get('context_mentions', [])
-    if context_mentions:
-        for mention in context_mentions:
-            with st.container(border=True):
-                st.markdown(f"**{mention.get('type', 'mention').title()}**")
-                st.write(mention.get('content', ''))
-                st.caption(f"Source: {mention.get('source', 'Unknown')} | {mention.get('timestamp', 'Unknown date')}")
-    else:
-        st.info("No context or news mentions recorded.")
-        
-        # Add context manually
-        with st.expander("Add Context/News"):
-            context_type = st.selectbox("Type", ["news", "mention", "movement", "performance"])
-            context_content = st.text_area("Content")
-            context_source = st.text_input("Source")
-            
-            if st.button("Add Context"):
-                if context_content:
-                    success = add_context_to_person(person['id'], context_type, context_content, context_source)
-                    if success:
-                        save_data()
-                        st.success("Context added!")
-                        st.rerun()
-
-elif st.session_state.current_view == 'firm_details' and st.session_state.selected_firm_id:
-    firm = get_firm_by_id(st.session_state.selected_firm_id)
-    if not firm:
-        st.error("Firm not found")
-        go_to_firms()
-        st.rerun()
-    
-    # Firm header
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.header(f"{safe_get(firm, 'name')}")
-        st.markdown(f"**{safe_get(firm, 'firm_type')} • {safe_get(firm, 'location')}**")
-    with col2:
-        col2a, col2b = st.columns(2)
-        with col2a:
-            if st.button("← Back"):
-                go_to_firms()
-                st.rerun()
-        with col2b:
-            if st.button("Edit"):
-                st.session_state.edit_firm_data = firm
-                st.session_state.show_edit_firm_modal = True
-                st.rerun()
-    
-    # Firm metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Assets Under Management", safe_get(firm, 'aum'))
-    with col2:
-        st.metric("Founded", safe_get(firm, 'founded'))
-    with col3:
-        people_count = len(get_people_by_firm(safe_get(firm, 'name')))
-        st.metric("Total People", people_count)
-    
-    # Firm details
-    description = safe_get(firm, 'description')
-    if description != 'Unknown' and description:
-        st.markdown(f"**About:** {description}")
-    
-    website = safe_get(firm, 'website')
-    if website != 'Unknown' and website:
-        st.markdown(f"**Website:** [{website}]({website})")
-    
-    # People at this firm
-    st.markdown("---")
-    st.subheader(f"People at {safe_get(firm, 'name')}")
-    
-    firm_people = get_people_by_firm(safe_get(firm, 'name'))
-    if firm_people:
-        for person in firm_people:
-            with st.container(border=True):
-                col1, col2, col3 = st.columns([2, 2, 1])
-                
-                with col1:
-                    st.markdown(f"**{safe_get(person, 'name')}**")
-                    st.caption(safe_get(person, 'current_title'))
-                
-                with col2:
-                    email = safe_get(person, 'email')
-                    expertise = safe_get(person, 'expertise')
-                    if email != 'Unknown' and email:
-                        st.caption(f"Email: {email}")
-                    if expertise != 'Unknown' and expertise:
-                        st.caption(f"Expertise: {expertise}")
-                
-                with col3:
-                    if st.button("View Profile", key=f"view_full_{person['id']}", use_container_width=True):
-                        go_to_person_details(person['id'])
-                        st.rerun()
-    else:
-        st.info("No people added for this firm yet.")
-    
-    # Context/News Section
-    st.markdown("---")
-    st.subheader("Context & News")
-    
-    context_mentions = firm.get('context_mentions', [])
-    if context_mentions:
-        for mention in context_mentions:
-            with st.container(border=True):
-                st.markdown(f"**{mention.get('type', 'mention').title()}**")
-                st.write(mention.get('content', ''))
-                st.caption(f"Source: {mention.get('source', 'Unknown')} | {mention.get('timestamp', 'Unknown date')}")
-    else:
-        st.info("No context or news mentions recorded.")
-        
-        # Add context manually
-        with st.expander("Add Context/News"):
-            context_type = st.selectbox("Type", ["news", "mention", "movement", "performance"])
-            context_content = st.text_area("Content")
-            context_source = st.text_input("Source")
-            
-            if st.button("Add Context"):
-                if context_content:
-                    success = add_context_to_firm(firm['id'], context_type, context_content, context_source)
-                    if success:
-                        save_data()
-                        st.success("Context added!")
-                        st.rerun()
-
-# Handle modals for adding/editing
-if st.session_state.show_add_person_modal:
-    st.markdown("---")
-    st.subheader("Add New Person")
-    
-    with st.form("add_person_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            name = st.text_input("Full Name*", placeholder="John Smith")
-            title = st.text_input("Current Title*", placeholder="Portfolio Manager")
-            company = st.text_input("Current Company*", placeholder="Company Name")
-            location = st.text_input("Location", placeholder="Hong Kong")
-            
-            # REAL-TIME duplicate check with visual feedback
-            if name and company:
-                existing_person = find_existing_person_strict(name, company)
-                person_key = create_person_key(name, company)
-                
-                if existing_person:
-                    st.error(f"🚫 **DUPLICATE DETECTED**")
-                    st.error(f"Person already exists: {safe_get(existing_person, 'name')} at {safe_get(existing_person, 'current_company_name')}")
-                    st.info(f"🔑 Generated Key: `{person_key}`")
-                    
-                    if st.button(f"👁️ View Existing: {safe_get(existing_person, 'name')}", key="view_existing_realtime"):
-                        go_to_person_details(existing_person['id'])
-                        st.session_state.show_add_person_modal = False
-                        st.rerun()
-                else:
-                    st.success(f"✅ **NEW PERSON** - Ready to add")
-                    st.info(f"🔑 Generated Key: `{person_key}`")
-        
-        with col2:
-            email = st.text_input("Email", placeholder="john.smith@company.com")
-            phone = st.text_input("Phone", placeholder="+852-1234-5678")
-            education = st.text_input("Education", placeholder="Harvard, MIT")
-            expertise = st.text_input("Expertise", placeholder="Equity Research")
-        
-        # Employment dates
-        st.markdown("**Employment Dates**")
-        col3, col4 = st.columns(2)
-        with col3:
-            start_date = st.date_input("Start Date", value=date.today())
-            aum_managed = st.text_input("AUM Managed", placeholder="500M USD")
-        with col4:
-            is_current = st.checkbox("Current Position", value=True)
-            end_date = None if is_current else st.date_input("End Date", value=date.today())
-            strategy = st.text_input("Strategy", placeholder="Long/Short Equity")
-        
-        submitted = st.form_submit_button("Add Person", use_container_width=True)
-        
-        if submitted:
-            if name and title and company:
-                # STRICT duplicate check - completely block if exists
-                existing_person = find_existing_person_strict(name, company)
-                
-                if existing_person:
-                    st.error(f"🚫 **DUPLICATE BLOCKED**: Person '{name}' already exists at '{company}'")
-                    st.info(f"**Existing Profile**: {safe_get(existing_person, 'name')} - {safe_get(existing_person, 'current_title')} at {safe_get(existing_person, 'current_company_name')}")
-                    st.warning("❌ **Cannot create duplicate profiles**. Use the Edit function to update existing profiles.")
-                    
-                    # Show link to existing profile
-                    if st.button(f"👁️ View Existing Profile: {safe_get(existing_person, 'name')}", key="view_existing_duplicate"):
-                        go_to_person_details(existing_person['id'])
-                        st.session_state.show_add_person_modal = False
-                        st.rerun()
-                    
-                else:
-                    # Create new person - no duplicate exists
-                    new_person_id = str(uuid.uuid4())
-                    new_person = {
-                        "id": new_person_id,
-                        "name": name,
-                        "current_title": title,
-                        "current_company_name": company,
-                        "location": location or "Unknown",
-                        "email": email or "",
-                        "phone": phone or "",
-                        "education": education or "",
-                        "expertise": expertise or "",
-                        "aum_managed": aum_managed or "",
-                        "strategy": strategy or "",
-                        "created_date": datetime.now().isoformat(),
-                        "last_updated": datetime.now().isoformat(),
-                        "context_mentions": [{
-                            'id': str(uuid.uuid4()),
-                            'timestamp': datetime.now().isoformat(),
-                            'type': 'mention',
-                            'content': f"Profile created manually",
-                            'source': 'Manual Entry',
-                            'date_added': datetime.now().isoformat()
-                        }]
-                    }
-                    
-                    # FINAL SAFETY CHECK before adding to database
-                    final_check = find_existing_person_strict(new_person['name'], new_person['current_company_name'])
-                    if final_check:
-                        st.error(f"🚫 **FINAL SAFETY CHECK BLOCKED**: Duplicate detected just before save!")
-                        st.error(f"Matches: {safe_get(final_check, 'name')} at {safe_get(final_check, 'current_company_name')}")
-                        # Don't use return here - just skip the rest with continue logic
-                    else:
-                        # Only add if final check passes
-                        st.session_state.people.append(new_person)
-                        
-                        # Tag as Asia-based
-                        tag_profile_as_asia(new_person, 'person')
-                        
-                        # Add employment record
-                        success = add_employment_with_dates(
-                            new_person_id, company, title, start_date, end_date, location or "Unknown", strategy or "Unknown"
-                        )
-                        
-                        if success:
-                            save_data()
-                            st.success(f"✅ Successfully added {name}!")
+                        existing = find_existing_person_strict(new_person_name, new_person_company)
+                        if existing:
+                            st.warning(f"Duplicate found: {safe_get(existing, 'name')} already exists at {safe_get(existing, 'current_company_name')}. ID: {existing['id']}")
+                        else:
+                            person_data = {
+                                "name": new_person_name,
+                                "current_title": new_person_title,
+                                "current_company_name": new_person_company,
+                                "location": new_person_location,
+                                "email": new_person_email,
+                                "phone": new_person_phone,
+                                "education": new_person_education,
+                                "expertise": new_person_expertise,
+                                "aum_managed": new_person_aum,
+                                "strategy": new_person_strategy
+                            }
+                            add_person(person_data)
+                            st.success(f"Person '{new_person_name}' added successfully!")
                             st.session_state.show_add_person_modal = False
                             st.rerun()
-                        else:
-                            st.error("❌ Failed to add employment record")
-            else:
-                st.error("❌ Please fill required fields (*)")
-    
-    if st.button("Cancel", key="cancel_add_person"):
-        st.session_state.show_add_person_modal = False
-        st.rerun()
+            if st.button("Close Add Person", key="close_add_person_modal"):
+                st.session_state.show_add_person_modal = False
+                st.rerun()
 
-# Add Employment Modal
-if st.session_state.show_add_employment_modal:
-    st.markdown("---")
-    st.subheader("Add Employment Record")
-    
-    person = get_person_by_id(st.session_state.selected_person_id)
-    if person:
-        st.write(f"Adding employment for: **{safe_get(person, 'name')}**")
-        
-        with st.form("add_employment_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                company_name = st.text_input("Company Name*", placeholder="Company Name")
-                title = st.text_input("Job Title*", placeholder="Portfolio Manager")
-                location = st.text_input("Location", placeholder="Hong Kong")
-            
-            with col2:
-                start_date = st.date_input("Start Date*", value=date.today())
-                is_current = st.checkbox("Current Position", value=False)
-                end_date = None if is_current else st.date_input("End Date")
-                strategy = st.text_input("Strategy/Focus", placeholder="Long/Short Equity")
-            
-            submitted = st.form_submit_button("Add Employment", use_container_width=True)
-            
-            if submitted:
-                if company_name and title and start_date:
-                    if not is_current and end_date and end_date <= start_date:
-                        st.error("End date must be after start date")
+    if st.session_state.show_add_firm_modal:
+        with st.expander("➕ Add New Firm", expanded=True):
+            st.markdown("Fill in the details for the new firm.")
+            with st.form("add_firm_form"):
+                new_firm_name = st.text_input("Firm Name*")
+                new_firm_type = st.text_input("Firm Type (e.g., Hedge Fund, Asset Manager)")
+                new_firm_location = st.text_input("Location")
+                new_firm_headquarters = st.text_input("Headquarters")
+                new_firm_aum = st.text_input("AUM (e.g., '50B USD')")
+                new_firm_founded = st.number_input("Founded Year", min_value=1900, max_value=datetime.now().year, value=2000)
+                new_firm_strategy = st.text_input("Strategy (e.g., 'Long/Short Equity', 'Multi-Strategy')")
+                new_firm_website = st.text_input("Website")
+                new_firm_description = st.text_area("Description")
+                
+                submitted = st.form_submit_button("Add Firm")
+                if submitted:
+                    if not new_firm_name:
+                        st.error("Firm Name is required.")
                     else:
-                        success = add_employment_with_dates(
-                            person['id'], company_name, title, start_date, end_date, location or "Unknown", strategy or "Unknown"
-                        )
-                        
-                        if success:
-                            st.success("Employment record added!")
-                            st.session_state.show_add_employment_modal = False
-                            st.rerun()
-                        else:
-                            st.error("Failed to add employment record")
-                else:
-                    st.error("Please fill required fields (*)")
-        
-        if st.button("Cancel", key="cancel_add_employment"):
-            st.session_state.show_add_employment_modal = False
-            st.rerun()
+                        firm_data = {
+                            "name": new_firm_name,
+                            "firm_type": new_firm_type,
+                            "location": new_firm_location,
+                            "headquarters": new_firm_headquarters,
+                            "aum": new_firm_aum,
+                            "founded": new_firm_founded,
+                            "strategy": new_firm_strategy,
+                            "website": new_firm_website,
+                            "description": new_firm_description
+                        }
+                        add_firm(firm_data)
+                        st.success(f"Firm '{new_firm_name}' added successfully!")
+                        st.session_state.show_add_firm_modal = False
+                        st.rerun()
+            if st.button("Close Add Firm", key="close_add_firm_modal"):
+                st.session_state.show_add_firm_modal = False
+                st.rerun()
 
-# Auto-save functionality
-current_time = datetime.now()
-if 'last_auto_save' not in st.session_state:
-    st.session_state.last_auto_save = current_time
-
-time_since_save = (current_time - st.session_state.last_auto_save).total_seconds()
-if time_since_save > 30 and (st.session_state.people or st.session_state.firms):
-    save_data()
-    st.session_state.last_auto_save = current_time
-
-# --- ASIA-SPECIFIC EXPORT SECTION ---
-st.markdown("---")
-col1, col2, col3 = st.columns([2, 1, 2])
-
-with col2:
-    asia_csv_data, asia_filename = export_asia_csv()
-    if asia_csv_data:
-        asia_people_count = len(get_asia_people())
-        asia_firms_count = len(get_asia_firms())
-        
-        st.download_button(
-            f"🌏 Download Asia Database ({asia_people_count + asia_firms_count} records)",
-            asia_csv_data,
-            asia_filename,
-            "text/csv",
-            use_container_width=True,
-            help=f"Export {asia_people_count} Asia-based people and {asia_firms_count} Asia-based firms to CSV"
-        )
-    else:
-        st.info("🌏 No Asia-based profiles found yet")
-        st.caption("Asia-based profiles will appear here automatically when detected")
-
-# --- LOG FILE ACCESS FUNCTIONS ---
-def get_recent_logs(log_type="main", lines=50):
-    """Get recent log entries for monitoring"""
-    try:
-        if log_type == "main":
-            log_file = LOGS_DIR / 'hedge_fund_app.log'
-        elif log_type == "extraction":
-            log_file = LOGS_DIR / 'extraction.log'
-        elif log_type == "database":
-            log_file = LOGS_DIR / 'database.log'
-        elif log_type == "api":
-            log_file = LOGS_DIR / 'api.log'
-        elif log_type == "user_actions":
-            log_file = LOGS_DIR / 'user_actions.log'
-        else:
-            return []
-        
-        if not log_file.exists():
-            return []
-        
-        with open(log_file, 'r', encoding='utf-8') as f:
-            all_lines = f.readlines()
-            return all_lines[-lines:] if len(all_lines) > lines else all_lines
-    
-    except Exception as e:
-        logger.error(f"Error reading log file {log_type}: {e}")
-        return []
-
-def log_session_summary():
-    """Log session summary statistics"""
-    try:
-        people_count = len(st.session_state.people)
-        firms_count = len(st.session_state.firms)
-        asia_people = len(get_asia_people())
-        asia_firms = len(get_asia_firms())
-        
-        log_user_action("SESSION_SUMMARY", 
-            f"Session {SESSION_ID} stats: {people_count} people ({asia_people} Asia), {firms_count} firms ({asia_firms} Asia)")
-    
-    except Exception as e:
-        logger.error(f"Error logging session summary: {e}")
-
-# --- COMPREHENSIVE DEBUGGING SECTION ---
-if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed database information for debugging"):
-    st.markdown("---")
-    st.subheader("🔧 Database Debug Information")
-    
-    # Log debug mode access
-    log_user_action("DEBUG_MODE", "User entered debug mode")
-    
-    # Show all current person keys
-    st.markdown("**Current People in Database:**")
-    if st.session_state.people:
-        for i, person in enumerate(st.session_state.people):
-            name = safe_get(person, 'name')
-            company = safe_get(person, 'current_company_name')
-            key = create_person_key(name, company)
+    if st.session_state.current_view == 'person_detail' and st.session_state.selected_person_id:
+        person = get_person_by_id(st.session_state.selected_person_id)
+        if person:
+            st.header(f"👤 Person Details: {safe_get(person, 'name')}")
             
-            col1, col2, col3 = st.columns([2, 2, 2])
-            with col1:
-                st.write(f"**{i+1}. {name}**")
-            with col2:
-                st.write(f"{company}")
-            with col3:
-                st.code(f"{key}")
-    else:
-        st.info("No people in database")
+            col_b1, col_b2, col_b3 = st.columns([0.15, 0.15, 0.7])
+            with col_b1:
+                if st.button("⬅️ Back to People"):
+                    st.session_state.current_view = 'people'
+                    st.session_state.selected_person_id = None
+                    st.rerun()
+            with col_b2:
+                if st.button("✏️ Edit Person"):
+                    st.session_state.edit_person_data = person
+                    st.session_state.show_edit_person_modal = True
+                    st.rerun()
+            with col_b3:
+                if st.button("🗑️ Delete Person", type="secondary"):
+                    if st.warning("Are you sure you want to delete this person and all their employments?"):
+                        if st.button("Confirm Delete", key="confirm_delete_person"):
+                            delete_person(person['id'])
+                            st.success("Person deleted.")
+                            st.session_state.current_view = 'people'
+                            st.session_state.selected_person_id = None
+                            st.rerun()
+            
+            st.subheader("Basic Information")
+            st.write(f"**Name:** {safe_get(person, 'name')}")
+            st.write(f"**Current Title:** {safe_get(person, 'current_title')}")
+            st.write(f"**Current Company:** {safe_get(person, 'current_company_name')}")
+            st.write(f"**Location:** {safe_get(person, 'location')}")
+            st.write(f"**Email:** {safe_get(person, 'email')}")
+            st.write(f"**Phone:** {safe_get(person, 'phone')}")
+            st.write(f"**Education:** {safe_get(person, 'education')}")
+            st.write(f"**Expertise:** {safe_get(person, 'expertise')}")
+            st.write(f"**AUM Managed:** {safe_get(person, 'aum_managed')}")
+            st.write(f"**Strategy:** {safe_get(person, 'strategy')}")
+            st.write(f"**Asia-based:** {'Yes' if person.get('is_asia_based', False) else 'No'}")
+            st.write(f"**Created On:** {safe_get(person, 'created_date').split('T')[0]}")
+            st.write(f"**Last Updated:** {safe_get(person, 'last_updated').split('T')[0]}")
+            
+            st.subheader("Employment History")
+            person_employments = get_employments_by_person_id(person['id'])
+            if person_employments:
+                employments_df = pd.DataFrame(person_employments)
+                employments_df['start_date'] = employments_df['start_date'].apply(lambda x: x.strftime('%Y-%m-%d') if isinstance(x, date) else x)
+                employments_df['end_date'] = employments_df['end_date'].apply(lambda x: x.strftime('%Y-%m-%d') if isinstance(x, date) else 'Present' if x is None else x)
+                st.dataframe(employments_df[['company_name', 'title', 'start_date', 'end_date', 'location', 'strategy']], use_container_width=True)
+                
+                # Add employment editing/deleting
+                st.markdown("##### Edit/Delete Employments")
+                for emp in person_employments:
+                    col_e1, col_e2, col_e3 = st.columns([0.6, 0.2, 0.2])
+                    with col_e1:
+                        st.write(f"{safe_get(emp, 'title')} at {safe_get(emp, 'company_name')} ({safe_get(emp, 'start_date')} - {safe_get(emp, 'end_date') if emp.get('end_date') else 'Present'})")
+                    with col_e2:
+                        # Simple edit form directly here
+                        with st.popover(f"Edit {emp.get('company_name')}"):
+                            edited_company = st.text_input("Company Name", value=safe_get(emp, 'company_name'), key=f"edit_emp_company_{emp['id']}")
+                            edited_title = st.text_input("Title", value=safe_get(emp, 'title'), key=f"edit_emp_title_{emp['id']}")
+                            edited_start = st.date_input("Start Date", value=emp['start_date'], key=f"edit_emp_start_{emp['id']}")
+                            
+                            # Handle "Present" for end_date
+                            is_present = emp.get('end_date') is None
+                            use_present = st.checkbox("Current (Present)", value=is_present, key=f"edit_emp_present_{emp['id']}")
+                            edited_end = None
+                            if not use_present:
+                                edited_end = st.date_input("End Date", value=emp['end_date'] if emp.get('end_date') else date.today(), key=f"edit_emp_end_{emp['id']}")
+
+                            edited_location = st.text_input("Location", value=safe_get(emp, 'location'), key=f"edit_emp_location_{emp['id']}")
+                            edited_strategy = st.text_input("Strategy", value=safe_get(emp, 'strategy'), key=f"edit_emp_strategy_{emp['id']}")
+
+                            if st.button("Save Changes", key=f"save_edit_emp_{emp['id']}"):
+                                new_employment_data = {
+                                    "company_name": edited_company,
+                                    "title": edited_title,
+                                    "start_date": edited_start,
+                                    "end_date": None if use_present else edited_end,
+                                    "location": edited_location,
+                                    "strategy": edited_strategy
+                                }
+                                update_employment(emp['id'], new_employment_data)
+                                st.success("Employment updated successfully!")
+                                st.rerun()
+                    with col_e3:
+                        if st.button("Delete", key=f"delete_emp_{emp['id']}"):
+                            delete_employment(emp['id'])
+                            st.success("Employment deleted.")
+                            st.rerun()
+
+            if st.button("➕ Add New Employment for This Person"):
+                st.session_state.show_add_employment_modal = True
+                
+            # Add employment modal
+            if st.session_state.show_add_employment_modal:
+                with st.expander(f"➕ Add New Employment for {safe_get(person, 'name')}", expanded=True):
+                    with st.form("add_employment_form"):
+                        new_emp_company = st.text_input("Company Name*")
+                        new_emp_title = st.text_input("Title*")
+                        new_emp_start_date = st.date_input("Start Date*", value=date.today())
+                        
+                        new_emp_is_present = st.checkbox("Current (Present)")
+                        new_emp_end_date = None
+                        if not new_emp_is_present:
+                            new_emp_end_date = st.date_input("End Date")
+                        
+                        new_emp_location = st.text_input("Location")
+                        new_emp_strategy = st.text_input("Strategy")
+                        
+                        submitted_emp = st.form_submit_button("Add Employment")
+                        if submitted_emp:
+                            if not new_emp_company or not new_emp_title or not new_emp_start_date:
+                                st.error("Company Name, Title, and Start Date are required.")
+                            else:
+                                employment_data = {
+                                    "person_id": person['id'],
+                                    "company_name": new_emp_company,
+                                    "title": new_emp_title,
+                                    "start_date": new_emp_start_date,
+                                    "end_date": new_emp_end_date if not new_emp_is_present else None,
+                                    "location": new_emp_location,
+                                    "strategy": new_emp_strategy
+                                }
+                                add_employment(employment_data)
+                                st.success("Employment added successfully!")
+                                st.session_state.show_add_employment_modal = False
+                                st.rerun()
+                    if st.button("Close Add Employment", key="close_add_employment_modal"):
+                        st.session_state.show_add_employment_modal = False
+                        st.rerun()
+
+            st.subheader("Shared Work History")
+            shared_history = get_shared_work_history(person['id'])
+            if shared_history:
+                shared_history_df = pd.DataFrame(shared_history)
+                st.dataframe(shared_history_df[['colleague_name', 'shared_company', 'overlap_period', 'overlap_duration', 'connection_strength']], use_container_width=True)
+            else:
+                st.info(f"No shared work history found for {safe_get(person, 'name')}.")
+
+        else:
+            st.error("Person not found.")
+            if st.button("Back to People"):
+                st.session_state.current_view = 'people'
+                st.session_state.selected_person_id = None
+                st.rerun()
+
+    if st.session_state.show_edit_person_modal and st.session_state.edit_person_data:
+        person_to_edit = st.session_state.edit_person_data
+        with st.expander(f"✏️ Edit Person: {safe_get(person_to_edit, 'name')}", expanded=True):
+            st.markdown("Edit the details for this person.")
+            with st.form("edit_person_form"):
+                edited_name = st.text_input("Name*", value=safe_get(person_to_edit, 'name'))
+                edited_title = st.text_input("Current Title", value=safe_get(person_to_edit, 'current_title'))
+                edited_company = st.text_input("Current Company Name*", value=safe_get(person_to_edit, 'current_company_name'))
+                edited_location = st.text_input("Location", value=safe_get(person_to_edit, 'location'))
+                edited_email = st.text_input("Email", value=safe_get(person_to_edit, 'email'))
+                edited_phone = st.text_input("Phone", value=safe_get(person_to_edit, 'phone'))
+                edited_education = st.text_input("Education", value=safe_get(person_to_edit, 'education'))
+                edited_expertise = st.text_input("Expertise (comma-separated)", value=safe_get(person_to_edit, 'expertise'))
+                edited_aum = st.text_input("AUM Managed (e.g., '1.5B USD')", value=safe_get(person_to_edit, 'aum_managed'))
+                edited_strategy = st.text_input("Strategy", value=safe_get(person_to_edit, 'strategy'))
+                
+                submitted_edit = st.form_submit_button("Save Changes")
+                if submitted_edit:
+                    if not edited_name or not edited_company:
+                        st.error("Name and Current Company Name are required fields.")
+                    else:
+                        person_data_update = {
+                            "name": edited_name,
+                            "current_title": edited_title,
+                            "current_company_name": edited_company,
+                            "location": edited_location,
+                            "email": edited_email,
+                            "phone": edited_phone,
+                            "education": edited_education,
+                            "expertise": edited_expertise,
+                            "aum_managed": edited_aum,
+                            "strategy": edited_strategy
+                        }
+                        update_person(person_to_edit['id'], person_data_update)
+                        st.success(f"Person '{edited_name}' updated successfully!")
+                        st.session_state.show_edit_person_modal = False
+                        st.session_state.edit_person_data = None
+                        st.rerun()
+            if st.button("Close Edit Person", key="close_edit_person_modal"):
+                st.session_state.show_edit_person_modal = False
+                st.session_state.edit_person_data = None
+                st.rerun()
+
+    if st.session_state.current_view == 'firm_detail' and st.session_state.selected_firm_id:
+        firm = get_firm_by_id(st.session_state.selected_firm_id)
+        if firm:
+            st.header(f"🏢 Firm Details: {safe_get(firm, 'name')}")
+            
+            col_b1, col_b2, col_b3 = st.columns([0.15, 0.15, 0.7])
+            with col_b1:
+                if st.button("⬅️ Back to Firms"):
+                    st.session_state.current_view = 'firms'
+                    st.session_state.selected_firm_id = None
+                    st.rerun()
+            with col_b2:
+                if st.button("✏️ Edit Firm"):
+                    st.session_state.edit_firm_data = firm
+                    st.session_state.show_edit_firm_modal = True
+                    st.rerun()
+            with col_b3:
+                if st.button("🗑️ Delete Firm", type="secondary"):
+                    if st.warning("Are you sure you want to delete this firm?"):
+                        if st.button("Confirm Delete", key="confirm_delete_firm"):
+                            delete_firm(firm['id'])
+                            st.success("Firm deleted.")
+                            st.session_state.current_view = 'firms'
+                            st.session_state.selected_firm_id = None
+                            st.rerun()
+            
+            st.subheader("Basic Information")
+            st.write(f"**Firm Name:** {safe_get(firm, 'name')}")
+            st.write(f"**Firm Type:** {safe_get(firm, 'firm_type')}")
+            st.write(f"**Location:** {safe_get(firm, 'location')}")
+            st.write(f"**Headquarters:** {safe_get(firm, 'headquarters')}")
+            st.write(f"**AUM:** {safe_get(firm, 'aum')}")
+            st.write(f"**Founded:** {safe_get(firm, 'founded')}")
+            st.write(f"**Strategy:** {safe_get(firm, 'strategy')}")
+            st.write(f"**Website:** {safe_get(firm, 'website')}")
+            st.write(f"**Description:** {safe_get(firm, 'description')}")
+            st.write(f"**Asia-based:** {'Yes' if firm.get('is_asia_based', False) else 'No'}")
+            st.write(f"**Created On:** {safe_get(firm, 'created_date').split('T')[0]}")
+            st.write(f"**Last Updated:** {safe_get(firm, 'last_updated').split('T')[0]}")
+            
+            st.subheader("Associated People")
+            people_at_firm = get_people_by_firm(safe_get(firm, 'name'))
+            if people_at_firm:
+                people_at_firm_df = pd.DataFrame(people_at_firm)
+                st.dataframe(people_at_firm_df[['name', 'current_title', 'location', 'expertise']], use_container_width=True)
+            else:
+                st.info("No people currently associated with this firm in the database.")
+            
+            st.subheader("Performance Metrics")
+            firm_performance_metrics = get_performance_by_firm(firm['id'])
+            if firm_performance_metrics:
+                perf_df = pd.DataFrame(firm_performance_metrics)
+                st.dataframe(perf_df[['type', 'value', 'period', 'date', 'timestamp']], use_container_width=True)
+            else:
+                st.info("No performance metrics recorded for this firm.")
+        else:
+            st.error("Firm not found.")
+            if st.button("Back to Firms"):
+                st.session_state.current_view = 'firms'
+                st.session_state.selected_firm_id = None
+                st.rerun()
+
+    if st.session_state.show_edit_firm_modal and st.session_state.edit_firm_data:
+        firm_to_edit = st.session_state.edit_firm_data
+        with st.expander(f"✏️ Edit Firm: {safe_get(firm_to_edit, 'name')}", expanded=True):
+            st.markdown("Edit the details for this firm.")
+            with st.form("edit_firm_form"):
+                edited_firm_name = st.text_input("Firm Name*", value=safe_get(firm_to_edit, 'name'))
+                edited_firm_type = st.text_input("Firm Type (e.g., Hedge Fund, Asset Manager)", value=safe_get(firm_to_edit, 'firm_type'))
+                edited_firm_location = st.text_input("Location", value=safe_get(firm_to_edit, 'location'))
+                edited_firm_headquarters = st.text_input("Headquarters", value=safe_get(firm_to_edit, 'headquarters'))
+                edited_firm_aum = st.text_input("AUM (e.g., '50B USD')", value=safe_get(firm_to_edit, 'aum'))
+                edited_firm_founded = st.number_input("Founded Year", min_value=1900, max_value=datetime.now().year, value=safe_get(firm_to_edit, 'founded') if safe_get(firm_to_edit, 'founded') != 'Unknown' else 2000)
+                edited_firm_strategy = st.text_input("Strategy (e.g., 'Long/Short Equity', 'Multi-Strategy')", value=safe_get(firm_to_edit, 'strategy'))
+                edited_firm_website = st.text_input("Website", value=safe_get(firm_to_edit, 'website'))
+                edited_firm_description = st.text_area("Description", value=safe_get(firm_to_edit, 'description'))
+                
+                submitted_edit_firm = st.form_submit_button("Save Changes")
+                if submitted_edit_firm:
+                    if not edited_firm_name:
+                        st.error("Firm Name is required.")
+                    else:
+                        firm_data_update = {
+                            "name": edited_firm_name,
+                            "firm_type": edited_firm_type,
+                            "location": edited_firm_location,
+                            "headquarters": edited_firm_headquarters,
+                            "aum": edited_firm_aum,
+                            "founded": edited_firm_founded,
+                            "strategy": edited_firm_strategy,
+                            "website": edited_firm_website,
+                            "description": edited_firm_description
+                        }
+                        update_firm(firm_to_edit['id'], firm_data_update)
+                        st.success(f"Firm '{edited_firm_name}' updated successfully!")
+                        st.session_state.show_edit_firm_modal = False
+                        st.session_state.edit_firm_data = None
+                        st.rerun()
+            if st.button("Close Edit Firm", key="close_edit_firm_modal"):
+                st.session_state.show_edit_firm_modal = False
+                st.session_state.edit_firm_data = None
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("💾 Database Operations (Direct Access)")
     
-    # Test duplicate detection
-    st.markdown("**🧪 Test Duplicate Detection:**")
-    col1, col2, col3 = st.columns(3)
+    # Text input for direct person/firm key checking
+    st.markdown("#### Duplicate Check (Manual Input)")
+    col_dup1, col_dup2 = st.columns(2)
+    with col_dup1:
+        check_name = st.text_input("Name to check:", key="check_name_input")
+    with col_dup2:
+        check_company = st.text_input("Company to check:", key="check_company_input")
     
-    with col1:
-        test_name = st.text_input("Test Name:", key="debug_name")
-    with col2:
-        test_company = st.text_input("Test Company:", key="debug_company")
-    with col3:
-        if st.button("🔍 Check Duplicate", key="debug_check"):
-            if test_name and test_company:
-                log_user_action("DEBUG_DUPLICATE_TEST", f"Testing duplicate for: '{test_name}' at '{test_company}'")
-                
-                existing = find_existing_person_strict(test_name, test_company)
-                test_key = create_person_key(test_name, test_company)
-                
-                st.write(f"**Generated Key:** `{test_key}`")
-                
-                if existing:
-                    st.error(f"🚫 DUPLICATE FOUND")
-                    st.write(f"Matches: {safe_get(existing, 'name')} at {safe_get(existing, 'current_company_name')}")
-                    existing_key = create_person_key(safe_get(existing, 'name'), safe_get(existing, 'current_company_name'))
-                    st.write(f"Existing Key: `{existing_key}`")
-                else:
-                    st.success(f"✅ NO DUPLICATE - Safe to add")
+    if st.button("Check for Duplicates"):
+        if check_name and check_company:
+            existing = find_existing_person_strict(check_name, check_company)
+            if existing:
+                st.write(f"Matches: {safe_get(existing, 'name')} at {safe_get(existing, 'current_company_name')}")
+                existing_key = create_person_key(safe_get(existing, 'name'), safe_get(existing, 'current_company_name'))
+                st.write(f"Existing Key: `{existing_key}`")
+            else:
+                st.success(f"✅ NO DUPLICATE - Safe to add")
     
     # Show normalization examples
     st.markdown("**🔄 Normalization Examples:**")
@@ -2591,10 +2315,59 @@ if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed da
     if recent_logs:
         st.text_area("Recent Log Entries:", 
             value="".join(recent_logs), 
-            height=300,
-            disabled=True)
+            height=300)
     else:
-        st.info(f"No {log_type} logs found")
+        st.info(f"No recent logs found for '{log_type}'.")
 
-# Log session summary before exit (this runs every time)
-log_session_summary()
+def get_recent_logs(log_type, num_lines):
+    """Retrieve recent log entries from a specific log file."""
+    log_file_map = {
+        "user_actions": "extraction.log", # User actions are logged to extraction_logger
+        "extraction": "extraction.log",
+        "database": "hedge_fund_app.log", # Database errors are logged to main logger
+        "api": "hedge_fund_app.log", # API errors are logged to main logger
+        "main": "hedge_fund_app.log"
+    }
+    
+    log_file_name = log_file_map.get(log_type, "hedge_fund_app.log")
+    
+    try:
+        # Construct the full path to the log file (assuming current directory)
+        log_path = Path(log_file_name)
+        
+        if not log_path.exists():
+            return [f"Log file '{log_file_name}' does not exist."]
+            
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+            # Filter logs based on type for more specific display if needed, 
+            # though current loggers largely separate them already.
+            # For "user_actions" and "extraction", they both go to extraction.log
+            # For "database" and "api", they both go to hedge_fund_app.log
+            if log_type == "user_actions":
+                filtered_lines = [line for line in lines if "USER:" in line]
+            elif log_type == "extraction":
+                filtered_lines = [line for line in lines if "EXTRACTION:" in line or "GEMINI_REQUEST" in line]
+            elif log_type == "database":
+                filtered_lines = [line for line in lines if "Save error:" in line or "Error loading data:" in line]
+            elif log_type == "api":
+                filtered_lines = [line for line in lines if "Gemini setup failed:" in line or "Extraction failed:" in line]
+            else: # main
+                filtered_lines = lines # Show all for main log
+                
+            return filtered_lines[-num_lines:]
+            
+    except Exception as e:
+        logger.error(f"Error reading log file '{log_file_name}': {e}")
+        return [f"Error reading log file: {e}"]
+
+def _run_extraction_in_background(text, model, q):
+    """Helper function to run extraction in a separate thread and put results in a queue."""
+    try:
+        people, performance = process_extraction_with_rate_limiting(text, model)
+        q.put((people, performance))
+    except Exception as e:
+        q.put(e)
+
+if __name__ == "__main__":
+    main()
