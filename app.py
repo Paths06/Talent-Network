@@ -1431,7 +1431,7 @@ with st.sidebar:
                             'results': {'people': people, 'performance': performance}
                         }
                         
-                        logger.info(f\"[{SESSION_ID}] USER: "EXTRACTION_SUCCESS" - f"Extraction complete: {len(people\")} people, {len(performance)} metrics found")
+                        # logger.info(f\"[{SESSION_ID}] USER: "EXTRACTION_SUCCESS" - f"Extraction complete: {len(people\")} people, {len(performance)} metrics found")
                         st.success(f"Extraction complete! Found {len(people)} people and {len(performance)} metrics")
                         
                     except Exception as e:
