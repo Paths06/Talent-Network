@@ -8,7 +8,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import time
 from pathlib import Path
-import logging
 import threading
 import queue
 import re
@@ -173,7 +172,7 @@ def find_existing_person_strict(name, company):
         return None
         
     except Exception as e:
-        logger.error(f"Error in duplicate check: {e}")
+        console_log(f"Error in duplicate check: {e}", "ERROR")
         return None
 
 def check_for_duplicates_in_extraction(people_data):
@@ -191,7 +190,7 @@ def check_for_duplicates_in_extraction(people_data):
         if person_key:
             if person_key in seen_keys:
                 duplicates.append(person)
-                logger.warning(f"INTERNAL DUPLICATE: {safe_get(person, 'name')} at {person.get('current_company', person.get('company', ''))} appears multiple times in extraction")
+                console_log(f"INTERNAL DUPLICATE: {safe_get(person, 'name')} at {person.get('current_company', person.get('company', ''))} appears multiple times in extraction", "WARNING")
             else:
                 seen_keys.add(person_key)
                 unique_people.append(person)
@@ -436,7 +435,7 @@ def repair_json_response(json_text):
         return json_text
         
     except Exception as e:
-        logger.warning(f"JSON repair failed: {e}")
+        console_log(f"JSON repair failed: {e}", "WARNING")
         return json_text
 
 # --- Date overlap calculation ---
@@ -461,7 +460,7 @@ def calculate_date_overlap(start1, end1, start2, end2):
             return None
             
     except Exception as e:
-        logger.warning(f"Error calculating date overlap: {e}")
+        console_log(f"Error calculating date overlap: {e}", "WARNING")
         return None
 
 # --- File Loading ---
@@ -471,7 +470,7 @@ def load_file_content_enhanced(uploaded_file):
         file_size = len(uploaded_file.getvalue())
         file_size_mb = file_size / (1024 * 1024)
         
-        logger.info(f"Loading file: {uploaded_file.name} ({file_size_mb:.1f} MB)")
+        console_log(f"Loading file: {uploaded_file.name} ({file_size_mb:.1f} MB)")
         
         if uploaded_file.type == "text/plain" or uploaded_file.name.endswith('.txt'):
             raw_data = uploaded_file.getvalue()
@@ -486,7 +485,7 @@ def load_file_content_enhanced(uploaded_file):
                 try:
                     content = raw_data.decode(encoding)
                     encoding_used = encoding
-                    logger.info(f"Successfully decoded file with {encoding}")
+                    console_log(f"Successfully decoded file with {encoding}")
                     break
                 except UnicodeDecodeError:
                     continue
@@ -545,7 +544,7 @@ def enhanced_global_search(query):
                 if query_lower in searchable_text:
                     matching_people.append(person)
             except Exception as e:
-                logger.warning(f"Error searching person: {e}")
+                console_log(f"Error searching person: {e}", "WARNING")
                 continue
         
         # Search firms
@@ -564,13 +563,13 @@ def enhanced_global_search(query):
                 if query_lower in searchable_text:
                     matching_firms.append(firm)
             except Exception as e:
-                logger.warning(f"Error searching firm: {e}")
+                console_log(f"Error searching firm: {e}", "WARNING")
                 continue
         
         return matching_people, matching_firms, matching_metrics
     
     except Exception as e:
-        logger.error(f"Error in enhanced_global_search: {e}")
+        console_log(f"Error in enhanced_global_search: {e}", "ERROR")
         return [], [], []
 
 # --- Database Persistence Setup ---
@@ -598,7 +597,7 @@ def save_data():
         return True
         
     except Exception as e:
-        logger.error(f"Save error: {e}")
+        console_log(f"Save error: {e}", "ERROR")
         return False
 
 def load_data():
@@ -629,7 +628,7 @@ def load_data():
         return people, firms, employments
         
     except Exception as e:
-        logger.error(f"Error loading data: {e}")
+        console_log(f"Error loading data: {e}", "ERROR")
         return [], [], []
 
 # --- Initialize Session State with Sample Data ---
@@ -822,7 +821,7 @@ def setup_gemini(api_key):
         model.model_id = "gemini-1.5-flash"
         return model
     except Exception as e:
-        logger.error(f"Gemini setup failed: {e}")
+        console_log(f"Gemini setup failed: {e}", "ERROR")
         return None
 
 def extract_data_from_text(text, model):
@@ -1150,7 +1149,7 @@ def add_employment_with_dates(person_id, company_name, title, start_date, end_da
         return True
         
     except Exception as e:
-        logger.error(f"Error adding employment: {e}")
+        console_log(f"Error adding employment: {e}", "ERROR")
         return False
 
 # --- Navigation Functions with Logging ---
