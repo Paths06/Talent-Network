@@ -31,41 +31,19 @@ try:
 except ImportError:
     GENAI_AVAILABLE = False
 
-
-# Session tracking (minimal)
+# Simple console logging
 if 'session_id' not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())[:8]
 
 SESSION_ID = st.session_state.session_id
 
-# def logger.info(message):
-#     """Log only essential events"""
-#     logger.info(f"[{SESSION_ID}] {message}")
+def console_log(message, type="INFO"):
+    """Simple console logging"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}] [{SESSION_ID}] {type}: {message}")
 
-# def logger.info(f\"[{SESSION_ID}] EXTRACTION: step, details=""\"):
-#     """Log extraction progress only"""
-#     logger.info(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
-
-# def logger.INFO(f\"[{SESSION_ID}] EXTRACTION: step - details=""\"):
-#     """Log extraction step with level"""
-#     if level == "ERROR":
-#         logger.error(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
-#     elif level == "WARNING":
-#         logger.warning(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
-#     else:
-#         logger.info(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
-
-# def logger.info(f\"[{SESSION_ID}] SAVED: profile_type - name at company=""\"):
-#     """Log when profiles are saved"""
-#     company_str = f" at {company}" if company else ""
-#     logger.info(f"[{SESSION_ID}] SAVED: {profile_type} - {name}{company_str}")
-
-# def logger.info(f\"[{SESSION_ID}] USER: action - details=""\"):
-#     """Log user actions"""
-#     logger.info(f"[{SESSION_ID}] USER: {action} - {details}")
-
-# Minimal session start log
-# logger.info(f"Session started")
+# Session start log
+console_log(f"Session started")
 
 # Configure page
 st.set_page_config(
@@ -84,7 +62,7 @@ def safe_get(data, key, default='Unknown'):
         value = data.get(key, default)
         return value if value is not None and str(value).strip() != '' else default
     except Exception as e:
-        logger.warning(f"Error in safe_get for key {key}: {e}")
+        console_log(f"Error in safe_get for key {key}: {e}", "WARNING")
         return default
 
 # --- BULLETPROOF Duplicate Detection Functions ---
@@ -213,7 +191,7 @@ def check_for_duplicates_in_extraction(people_data):
         if person_key:
             if person_key in seen_keys:
                 duplicates.append(person)
-                # logger.warning(f"INTERNAL DUPLICATE: {safe_get(person, 'name')} at {person.get('current_company', person.get('company', ''))} appears multiple times in extraction")
+                logger.warning(f"INTERNAL DUPLICATE: {safe_get(person, 'name')} at {person.get('current_company', person.get('company', ''))} appears multiple times in extraction")
             else:
                 seen_keys.add(person_key)
                 unique_people.append(person)
@@ -850,9 +828,9 @@ def setup_gemini(api_key):
 def extract_data_from_text(text, model):
     """Extract people and performance data from text using Gemini"""
     try:
-        # logger.info(f\"[{SESSION_ID}] EXTRACTION: "GEMINI_REQUEST", f"Sending to {model.model_id}"\)
+        console_log(f"Sending to {model.model_id}")
         
-        # Paid tier optimized prompt
+        # Enhanced prompt to extract contact info and source snippets
         prompt = f"""
 Extract financial professionals and performance data from this text.
 
@@ -867,7 +845,11 @@ Return ONLY valid JSON with this structure:
       "current_title": "Job Title",
       "location": "City, Country",
       "expertise": "Area of expertise",
-      "movement_type": "hire|promotion|departure|appointment"
+      "movement_type": "hire|promotion|departure|appointment",
+      "email": "email@company.com if found",
+      "phone": "phone number if found",
+      "linkedin": "LinkedIn profile URL if found",
+      "source_snippet": "The exact sentence/paragraph from which this person's info was extracted"
     }}
   ],
   "performance": [
@@ -876,7 +858,8 @@ Return ONLY valid JSON with this structure:
       "metric_type": "return|sharpe|aum|alpha|beta",
       "value": "numeric_value_only",
       "period": "YTD|Q1|Q2|Q3|Q4|1Y|3Y|5Y",
-      "date": "YYYY"
+      "date": "YYYY",
+      "source_snippet": "The exact sentence/paragraph from which this metric was extracted"
     }}
   ]
 }}
@@ -942,11 +925,11 @@ Return ONLY valid JSON with this structure:
                 metric_type.lower() not in ['metric type', 'unknown']):
                 valid_performance.append(perf)
         
-        # logger.info(f\"[{SESSION_ID}] EXTRACTION: "EXTRACTION_COMPLETE", f"Found {len(valid_people\")} people, {len(valid_performance)} metrics")
+        console_log(f"Found {len(valid_people)} people, {len(valid_performance)} metrics")
         return valid_people, valid_performance
         
     except Exception as e:
-        logger.error(f"Extraction failed: {e}")
+        console_log(f"Extraction failed: {e}", "ERROR")
         return [], []
 
 def process_extraction_with_rate_limiting(text, model):
@@ -955,7 +938,7 @@ def process_extraction_with_rate_limiting(text, model):
     
     try:
         text_length = len(text)
-        # logger.info(f\"[{SESSION_ID}] EXTRACTION: PROCESS_START - f"Starting extraction process with {text_length} chars)
+        console_log(f"Starting extraction process with {text_length} chars")
         
         # Split into chunks if text is too long (paid tier can handle larger chunks)
         max_chunk_size = 100000  # 100K chars for paid tier
@@ -963,7 +946,7 @@ def process_extraction_with_rate_limiting(text, model):
         
         if len(text) <= max_chunk_size:
             chunks = [text]
-            # logger.info(f\"[{SESSION_ID}] EXTRACTION: "CHUNKING" - f"Single chunk: {len(text\")} chars")
+            console_log(f"Single chunk: {len(text)} chars")
         else:
             current_pos = 0
             chunk_count = 0
@@ -980,12 +963,10 @@ def process_extraction_with_rate_limiting(text, model):
                 if len(chunk) > 500:  # Minimum chunk size
                     chunks.append(chunk)
                     chunk_count += 1
-                    # logger.info(f"[{SESSION_ID}] EXTRACTION: CHUNK_CREATED" - f"Chunk {chunk_count}: {len(chunk\")} chars (pos: {current_pos}-{end_pos})")
-
-                    # logger.info(f\"[{SESSION_ID}] EXTRACTION: "CHUNK_CREATED" - f"Chunk {chunk_count}: {len(chunk\")} chars (pos: {current_pos}-{end_pos})")
+                    console_log(f"Chunk {chunk_count}: {len(chunk)} chars (pos: {current_pos}-{end_pos})")
                 current_pos = end_pos
             
-            # logger.info(f"[{SESSION_ID}] EXTRACTION: CHUNKING_COMPLETE" - f"Created {len(chunks\")} chunks from {text_length} chars")
+            console_log(f"Created {len(chunks)} chunks from {text_length} chars")
         
         all_people = []
         all_performance = []
@@ -993,7 +974,7 @@ def process_extraction_with_rate_limiting(text, model):
         
         # Process chunks with paid tier rate limiting (2000 RPM = ~33 per second)
         delay_between_requests = 0.03  # 30ms delay for paid tier
-        # logger.info(f"[{SESSION_ID}] EXTRACTION: RATE_LIMITING" - f"Using {delay_between_requests}s delay between requests (2000 RPM\")")
+        console_log(f"Using {delay_between_requests}s delay between requests (2000 RPM)")
         
         for i, chunk in enumerate(chunks):
             chunk_start_time = time.time()
@@ -1004,35 +985,38 @@ def process_extraction_with_rate_limiting(text, model):
                     'status_message': f'Processing chunk {i+1}/{len(chunks)}...'
                 })
                 
-                # logger.info(f"[{SESSION_ID}] EXTRACTION: "CHUNK_PROCESS_START" - f"Processing chunk {i+1}/{len(chunks\")} ({len(chunk)} chars)")
+                console_log(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
                 
                 people, performance = extract_data_from_text(chunk, model)
                 
                 chunk_duration = time.time() - chunk_start_time
-                # logger.info(f\"[{SESSION_ID}] EXTRACTION: "CHUNK_PROCESS_COMPLETE" - f"Chunk {i+1}/{len(chunks\")} complete: {len(people)} people, {len(performance)} metrics (duration: {chunk_duration:.2f}s)")
+                console_log(f"Chunk {i+1}/{len(chunks)} complete: {len(people)} people, {len(performance)} metrics (duration: {chunk_duration:.2f}s)")
                 
                 all_people.extend(people)
                 all_performance.extend(performance)
                 
                 # Rate limiting delay (except for last chunk)
                 if i < len(chunks) - 1:
-                    # logger.info(f\"[{SESSION_ID}] EXTRACTION: "RATE_LIMIT_DELAY" - f"Applying {delay_between_requests}s rate limit delay"\")
+                    console_log(f"Applying {delay_between_requests}s rate limit delay")
                     time.sleep(delay_between_requests)
                     
             except Exception as e:
                 chunk_duration = time.time() - chunk_start_time
                 failed_chunks.append(i+1)
-                # logger.info(f\"[{SESSION_ID}] EXTRACTION: "CHUNK_PROCESS_ERROR" - f"Chunk {i+1}/{len(chunks\")} failed: {e} (duration: {chunk_duration:.2f}s)", "ERROR")
+                console_log(f"Chunk {i+1}/{len(chunks)} failed: {e} (duration: {chunk_duration:.2f}s)", "ERROR")
                 continue
         
         total_duration = time.time() - start_time
-        # logger.info(f\"[{SESSION_ID}] EXTRACTION: "PROCESS_COMPLETE" - f"Extraction process complete: {len(all_people\")} people, {len(all_performance)} metrics from {len(chunks)} chunks, {len(failed_chunks)} failed (total duration: {total_duration:.2f}s)")
+        console_log(f"Extraction process complete: {len(all_people)} people, {len(all_performance)} metrics from {len(chunks)} chunks, {len(failed_chunks)} failed (total duration: {total_duration:.2f}s)")
+        
+        if failed_chunks:
+            console_log(f"Failed chunks: {failed_chunks}", "WARNING")
         
         return all_people, all_performance
         
     except Exception as e:
         total_duration = time.time() - start_time
-        # logger.info(f\"[{SESSION_ID}] EXTRACTION: "PROCESS_ERROR" - f"Processing failed: {e} (duration: {total_duration:.2f}s\")", "ERROR")
+        console_log(f"Processing failed: {e} (duration: {total_duration:.2f}s)", "ERROR")
         return [], []
 
 # --- Helper Functions ---
@@ -1171,26 +1155,26 @@ def add_employment_with_dates(person_id, company_name, title, start_date, end_da
 
 # --- Navigation Functions with Logging ---
 def go_to_firms():
-    # logger.info(f\"[{SESSION_ID}] USER: "NAVIGATION" - "Switched to Firms view"\")
+    console_log("Switched to Firms view")
     st.session_state.current_view = 'firms'
     st.session_state.selected_firm_id = None
 
 def go_to_people():
-    # logger.info(f\"[{SESSION_ID}] USER: "NAVIGATION" - "Switched to People view"\")
+    console_log("Switched to People view")
     st.session_state.current_view = 'people'
     st.session_state.selected_person_id = None
 
 def go_to_person_details(person_id):
     person = get_person_by_id(person_id)
     person_name = safe_get(person, 'name', 'Unknown') if person else 'Unknown'
-    # logger.info(f\"[{SESSION_ID}] USER: "NAVIGATION" - f"Viewing person details: {person_name} (ID: {person_id}\")")
+    console_log(f"Viewing person details: {person_name} (ID: {person_id})")
     st.session_state.selected_person_id = person_id
     st.session_state.current_view = 'person_details'
 
 def go_to_firm_details(firm_id):
     firm = get_firm_by_id(firm_id)
     firm_name = safe_get(firm, 'name', 'Unknown') if firm else 'Unknown'
-    # logger.info(f\"[{SESSION_ID}] USER: "NAVIGATION" - f"Viewing firm details: {firm_name} (ID: {firm_id}\")")
+    console_log(f"Viewing firm details: {firm_name} (ID: {firm_id})")
     st.session_state.selected_firm_id = firm_id
     st.session_state.current_view = 'firm_details'
 
@@ -1202,7 +1186,7 @@ def export_to_csv():
     try:
         people_count = len(st.session_state.people)
         firms_count = len(st.session_state.firms)
-        # logger.info(f\"[{SESSION_ID}] USER: "EXPORT_START" - f"Starting CSV export: {people_count} people, {firms_count} firms"\")
+        console_log(f"Starting CSV export: {people_count} people, {firms_count} firms")
         
         all_data = []
         
@@ -1215,6 +1199,8 @@ def export_to_csv():
                 'Company': safe_get(person, 'current_company_name'),
                 'Location': safe_get(person, 'location'),
                 'Email': safe_get(person, 'email'),
+                'Phone': safe_get(person, 'phone'),
+                'LinkedIn': safe_get(person, 'linkedin'),
                 'Expertise': safe_get(person, 'expertise'),
                 'AUM': safe_get(person, 'aum_managed'),
                 'Asia_Based': 'Yes' if person.get('is_asia_based', False) else 'No'
@@ -1229,6 +1215,8 @@ def export_to_csv():
                 'Company': safe_get(firm, 'name'),
                 'Location': safe_get(firm, 'location'),
                 'Email': safe_get(firm, 'website'),
+                'Phone': '',
+                'LinkedIn': '',
                 'Expertise': safe_get(firm, 'firm_type'),
                 'AUM': safe_get(firm, 'aum'),
                 'Asia_Based': 'Yes' if firm.get('is_asia_based', False) else 'No'
@@ -1239,13 +1227,13 @@ def export_to_csv():
         filename = f"hedge_fund_data_{timestamp}.csv"
         
         duration = time.time() - start_time
-        # logger.info(f\"[{SESSION_ID}] USER: "EXPORT_SUCCESS" - f"CSV export complete: {len(all_data\")} records, file: {filename} (duration: {duration:.2f}s)")
+        console_log(f"CSV export complete: {len(all_data)} records, file: {filename} (duration: {duration:.2f}s)")
         
         return df.to_csv(index=False), filename
     
     except Exception as e:
         duration = time.time() - start_time
-        # logger.info(f\"[{SESSION_ID}] USER: "EXPORT_ERROR" - f"CSV export failed: {e} (duration: {duration:.2f}s\")")
+        console_log(f"CSV export failed: {e} (duration: {duration:.2f}s)", "ERROR")
         return None, None
 
 def export_asia_csv():
@@ -1256,7 +1244,7 @@ def export_asia_csv():
         asia_people = get_asia_people()
         asia_firms = get_asia_firms()
         
-        # logger.info(f\"[{SESSION_ID}] USER: "ASIA_EXPORT_START" - f"Starting Asia CSV export: {len(asia_people\")} people, {len(asia_firms)} firms")
+        console_log(f"Starting Asia CSV export: {len(asia_people)} people, {len(asia_firms)} firms")
         
         asia_data = []
         
@@ -1269,6 +1257,8 @@ def export_asia_csv():
                 'Company': safe_get(person, 'current_company_name'),
                 'Location': safe_get(person, 'location'),
                 'Email': safe_get(person, 'email'),
+                'Phone': safe_get(person, 'phone'),
+                'LinkedIn': safe_get(person, 'linkedin'),
                 'Expertise': safe_get(person, 'expertise'),
                 'AUM': safe_get(person, 'aum_managed'),
                 'Region': 'Asia'
@@ -1283,13 +1273,15 @@ def export_asia_csv():
                 'Company': safe_get(firm, 'name'),
                 'Location': safe_get(firm, 'location'),
                 'Email': safe_get(firm, 'website'),
+                'Phone': '',
+                'LinkedIn': '',
                 'Expertise': safe_get(firm, 'firm_type'),
                 'AUM': safe_get(firm, 'aum'),
                 'Region': 'Asia'
             })
         
         if not asia_data:
-            # logger.info(f\"[{SESSION_ID}] USER: "ASIA_EXPORT_EMPTY" - "No Asia-based data found for export"\")
+            console_log("No Asia-based data found for export")
             return None, None
         
         df = pd.DataFrame(asia_data)
@@ -1297,32 +1289,32 @@ def export_asia_csv():
         filename = f"asia_hedge_fund_data_{timestamp}.csv"
         
         duration = time.time() - start_time
-        # logger.info(f\"[{SESSION_ID}] USER: "ASIA_EXPORT_SUCCESS" - f"Asia CSV export complete: {len(asia_data\")} records, file: {filename} (duration: {duration:.2f}s)")
+        console_log(f"Asia CSV export complete: {len(asia_data)} records, file: {filename} (duration: {duration:.2f}s)")
         
         return df.to_csv(index=False), filename
     
     except Exception as e:
         duration = time.time() - start_time
-        # logger.info(f\"[{SESSION_ID}] USER: "ASIA_EXPORT_ERROR" - f"Asia CSV export failed: {e} (duration: {duration:.2f}s\")")
+        console_log(f"Asia CSV export failed: {e} (duration: {duration:.2f}s)", "ERROR")
         return None, None
 
 # Initialize session state
 try:
-    # logger.info(f\"[{SESSION_ID}] USER: "APP_INIT_START" - "Initializing application"\")
+    console_log("Initializing application")
     initialize_session_state()
     
     # Tag all existing profiles for Asia classification
     if 'asia_tagged' not in st.session_state:
-        # logger.info(f\"[{SESSION_ID}] USER: "ASIA_TAGGING_START" - "Starting Asia classification for existing profiles"\")
+        console_log("Starting Asia classification for existing profiles")
         asia_people_count, asia_firms_count = tag_all_existing_profiles()
         save_data()  # Save the Asia tags
         st.session_state.asia_tagged = True
-        # logger.info(f\"[{SESSION_ID}] USER: "ASIA_TAGGING_COMPLETE" - f"Tagged {asia_people_count} Asia people and {asia_firms_count} Asia firms"\")
+        console_log(f"Tagged {asia_people_count} Asia people and {asia_firms_count} Asia firms")
         
-    # logger.info(f\"[{SESSION_ID}] USER: "APP_INIT_COMPLETE" - f"Application initialized successfully with {len(st.session_state.people\")} people, {len(st.session_state.firms)} firms")
+    console_log(f"Application initialized successfully with {len(st.session_state.people)} people, {len(st.session_state.firms)} firms")
         
 except Exception as init_error:
-    # logger.info(f\"[{SESSION_ID}] USER: "APP_INIT_ERROR" - f"Initialization failed: {init_error}"\")
+    console_log(f"Initialization failed: {init_error}", "ERROR")
     st.error(f"Initialization error: {init_error}")
     st.stop()
 
@@ -1404,14 +1396,14 @@ with st.sidebar:
         # Extract button
         if st.button("Start Extraction", use_container_width=True):
             if not newsletter_text.strip():
-                # logger.info(f\"[{SESSION_ID}] USER: "EXTRACTION_ERROR" - "Attempted extraction with empty content"\")
+                console_log("Attempted extraction with empty content", "ERROR")
                 st.error("Please provide content")
             elif not model:
-                # logger.info(f\"[{SESSION_ID}] USER: "EXTRACTION_ERROR" - "Attempted extraction without API key"\")
+                console_log("Attempted extraction without API key", "ERROR")
                 st.error("Please provide API key")
             else:
                 # Start background processing
-                # logger.info(f\"[{SESSION_ID}] USER: "EXTRACTION_START" - f"Starting extraction with {len(newsletter_text\")} characters using model {model.model_id}")
+                console_log(f"Starting extraction with {len(newsletter_text)} characters using model {model.model_id}")
                 
                 st.session_state.background_processing = {
                     'is_running': True,
@@ -1431,11 +1423,11 @@ with st.sidebar:
                             'results': {'people': people, 'performance': performance}
                         }
                         
-                        # logger.info(f\"[{SESSION_ID}] USER: "EXTRACTION_SUCCESS" - f"Extraction complete: {len(people\")} people, {len(performance)} metrics found")
+                        console_log(f"Extraction complete: {len(people)} people, {len(performance)} metrics found")
                         st.success(f"Extraction complete! Found {len(people)} people and {len(performance)} metrics")
                         
                     except Exception as e:
-                        # logger.info(f\"[{SESSION_ID}] USER: "EXTRACTION_ERROR" - f"Extraction failed: {e}"\")
+                        console_log(f"Extraction failed: {e}", "ERROR")
                         st.error(f"Extraction failed: {e}")
                         st.session_state.background_processing['is_running'] = False
 
@@ -1587,7 +1579,7 @@ with st.sidebar:
                         blocked_count += 1
                         blocked_details.append(f"• {name} at {company_name} (Key: {person_key})")
                         st.write(f"  🚫 **BLOCKED**: Duplicate found - {safe_get(existing_person, 'name')} at {safe_get(existing_person, 'current_company_name')}")
-                        logger.warning(f"BLOCKED DUPLICATE: {name} at {company_name} - already exists")
+                        console_log(f"BLOCKED DUPLICATE: {name} at {company_name} - already exists", "WARNING")
                         continue
                     
                     st.write(f"  ✅ **CREATING**: New person")
@@ -1595,29 +1587,50 @@ with st.sidebar:
                     # Only create if no duplicate exists
                     new_person_id = str(uuid.uuid4())
                     
+                    # Extract contact info from the extraction data
+                    extracted_email = safe_get(person_data, 'email', '').strip()
+                    extracted_phone = safe_get(person_data, 'phone', '').strip()
+                    extracted_linkedin = safe_get(person_data, 'linkedin', '').strip()
+                    source_snippet = safe_get(person_data, 'source_snippet', '').strip()
+                    
                     new_person = {
                         "id": new_person_id,
                         "name": name,
                         "current_title": safe_get(person_data, 'current_title', 'Unknown'),
                         "current_company_name": company_name,
                         "location": safe_get(person_data, 'location', 'Unknown'),
-                        "email": "",
-                        "phone": "",
+                        "email": extracted_email if extracted_email and extracted_email != 'Unknown' else "",
+                        "phone": extracted_phone if extracted_phone and extracted_phone != 'Unknown' else "",
+                        "linkedin": extracted_linkedin if extracted_linkedin and extracted_linkedin != 'Unknown' else "",
                         "education": "",
                         "expertise": safe_get(person_data, 'expertise', 'Unknown'),
                         "aum_managed": "",
                         "strategy": "",
                         "created_date": datetime.now().isoformat(),
                         "last_updated": datetime.now().isoformat(),
-                        "context_mentions": [{
+                        "context_mentions": []
+                    }
+                    
+                    # Add source snippet as context if available
+                    if source_snippet and source_snippet != 'Unknown':
+                        new_person["context_mentions"].append({
+                            'id': str(uuid.uuid4()),
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'mention',
+                            'content': f"Discovered via data extraction",
+                            'source': 'Data Extraction',
+                            'source_snippet': source_snippet,
+                            'date_added': datetime.now().isoformat()
+                        })
+                    else:
+                        new_person["context_mentions"].append({
                             'id': str(uuid.uuid4()),
                             'timestamp': datetime.now().isoformat(),
                             'type': 'mention',
                             'content': f"Discovered via data extraction",
                             'source': 'Data Extraction',
                             'date_added': datetime.now().isoformat()
-                        }]
-                    }
+                        })
                     
                     # FINAL SAFETY CHECK before adding to database
                     final_check = find_existing_person_strict(new_person['name'], new_person['current_company_name'])
@@ -1710,10 +1723,10 @@ with col2:
     if st.button("Search", use_container_width=True) or search_query != st.session_state.global_search:
         st.session_state.global_search = search_query
         if search_query and len(search_query.strip()) >= 2:
-            # logger.info(f\"[{SESSION_ID}] USER: "SEARCH" - f"User searched for: '{search_query}'"\")
+            console_log(f"User searched for: '{search_query}'")
             st.rerun()
         elif search_query != st.session_state.global_search:
-            # logger.info(f\"[{SESSION_ID}] USER: "SEARCH_CLEAR" - "User cleared search"\")
+            console_log("User cleared search")
             st.rerun()
 
 # Handle global search results
@@ -2031,6 +2044,9 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
         phone = safe_get(person, 'phone')
         if phone != 'Unknown' and phone:
             st.markdown(f"**Phone:** {phone}")
+        linkedin = safe_get(person, 'linkedin')
+        if linkedin != 'Unknown' and linkedin:
+            st.markdown(f"**LinkedIn:** [{linkedin}]({linkedin})")
     
     with col2:
         education = safe_get(person, 'education')
@@ -2144,6 +2160,12 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
                 st.markdown(f"**{mention.get('type', 'mention').title()}**")
                 st.write(mention.get('content', ''))
                 st.caption(f"Source: {mention.get('source', 'Unknown')} | {mention.get('timestamp', 'Unknown date')}")
+                
+                # Show source snippet if available
+                source_snippet = mention.get('source_snippet', '')
+                if source_snippet and source_snippet.strip():
+                    with st.expander("📄 View Source Snippet"):
+                        st.text_area("Original text:", value=source_snippet, height=100, disabled=True)
     else:
         st.info("No context or news mentions recorded.")
         
@@ -2296,6 +2318,7 @@ if st.session_state.show_add_person_modal:
         with col2:
             email = st.text_input("Email", placeholder="john.smith@company.com")
             phone = st.text_input("Phone", placeholder="+852-1234-5678")
+            linkedin = st.text_input("LinkedIn", placeholder="https://linkedin.com/in/johnsmith")
             education = st.text_input("Education", placeholder="Harvard, MIT")
             expertise = st.text_input("Expertise", placeholder="Equity Research")
         
@@ -2339,6 +2362,7 @@ if st.session_state.show_add_person_modal:
                         "location": location or "Unknown",
                         "email": email or "",
                         "phone": phone or "",
+                        "linkedin": linkedin or "",
                         "education": education or "",
                         "expertise": expertise or "",
                         "aum_managed": aum_managed or "",
@@ -2466,54 +2490,13 @@ with col2:
         st.info("🌏 No Asia-based profiles found yet")
         st.caption("Asia-based profiles will appear here automatically when detected")
 
-# --- LOG FILE ACCESS FUNCTIONS ---
-def get_recent_logs(log_type="main", lines=50):
-    """Get recent log entries for monitoring"""
-    try:
-        if log_type == "main":
-            log_file = LOGS_DIR / 'hedge_fund_app.log'
-        elif log_type == "extraction":
-            log_file = LOGS_DIR / 'extraction.log'
-        elif log_type == "database":
-            log_file = LOGS_DIR / 'database.log'
-        elif log_type == "api":
-            log_file = LOGS_DIR / 'api.log'
-        elif log_type == "user_actions":
-            log_file = LOGS_DIR / 'user_actions.log'
-        else:
-            return []
-        
-        if not log_file.exists():
-            return []
-        
-        with open(log_file, 'r', encoding='utf-8') as f:
-            all_lines = f.readlines()
-            return all_lines[-lines:] if len(all_lines) > lines else all_lines
-    
-    except Exception as e:
-        logger.error(f"Error reading log file {log_type}: {e}")
-        return []
-
-def log_session_summary():
-    """Log session summary statistics"""
-    try:
-        people_count = len(st.session_state.people)
-        firms_count = len(st.session_state.firms)
-        asia_people = len(get_asia_people())
-        asia_firms = len(get_asia_firms())
-        
-        # logger.info(f\"[{SESSION_ID}] USER: "SESSION_SUMMARY" - f"Session {SESSION_ID} stats: {people_count} people ({asia_people} Asia\"), {firms_count} firms ({asia_firms} Asia)")
-    
-    except Exception as e:
-        logger.error(f"Error logging session summary: {e}")
-
-# --- COMPREHENSIVE DEBUGGING SECTION ---
+# --- SIMPLE DEBUGGING SECTION ---
 if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed database information for debugging"):
     st.markdown("---")
     st.subheader("🔧 Database Debug Information")
     
     # Log debug mode access
-    # logger.info(f\"[{SESSION_ID}] USER: "DEBUG_MODE" - "User entered debug mode"\")
+    console_log("User entered debug mode")
     
     # Show all current person keys
     st.markdown("**Current People in Database:**")
@@ -2544,7 +2527,7 @@ if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed da
     with col3:
         if st.button("🔍 Check Duplicate", key="debug_check"):
             if test_name and test_company:
-                # logger.info(f\"[{SESSION_ID}] USER: "DEBUG_DUPLICATE_TEST" - f"Testing duplicate for: '{test_name}' at '{test_company}'"\")
+                console_log(f"Testing duplicate for: '{test_name}' at '{test_company}'")
                 
                 existing = find_existing_person_strict(test_name, test_company)
                 test_key = create_person_key(test_name, test_company)
@@ -2571,25 +2554,20 @@ if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed da
     for name, company in examples:
         key = create_person_key(name, company)
         st.write(f"• `{name}` + `{company}` → `{key}`")
+
+# Session summary
+def log_session_summary():
+    """Log session summary statistics"""
+    try:
+        people_count = len(st.session_state.people)
+        firms_count = len(st.session_state.firms)
+        asia_people = len(get_asia_people())
+        asia_firms = len(get_asia_firms())
+        
+        console_log(f"Session {SESSION_ID} stats: {people_count} people ({asia_people} Asia), {firms_count} firms ({asia_firms} Asia)")
     
-    # Show recent logs
-    st.markdown("---")
-    st.subheader("📋 Recent Log Entries")
-    
-    log_type = st.selectbox("Select Log Type:", 
-        ["user_actions", "extraction", "database", "api", "main"])
-    
-    # if st.button("Refresh Logs"):
-        # logger.info(f\"[{SESSION_ID}] USER: "DEBUG_LOG_VIEW" - f"User viewed {log_type} logs"\")
-    
-    recent_logs = get_recent_logs(log_type, 20)
-    if recent_logs:
-        st.text_area("Recent Log Entries:", 
-            value="".join(recent_logs), 
-            height=300,
-            disabled=True)
-    else:
-        st.info(f"No {log_type} logs found")
+    except Exception as e:
+        console_log(f"Error logging session summary: {e}", "ERROR")
 
 # Log session summary before exit (this runs every time)
 log_session_summary()
