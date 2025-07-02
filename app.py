@@ -65,7 +65,7 @@ SESSION_ID = st.session_state.session_id
 #     logger.info(f"[{SESSION_ID}] USER: {action} - {details}")
 
 # Minimal session start log
-logger.info(f"Session started")
+# logger.info(f"Session started")
 
 # Configure page
 st.set_page_config(
