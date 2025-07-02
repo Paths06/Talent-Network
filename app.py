@@ -1,23 +1,3 @@
-# Show processing capabilities
-        st.caption("🚀 **Optimized for Gemini Flash 1.5**")
-        st.caption("• 4M tokens/minute • 2000 requests/minute")
-        st.caption("• Up to 2MB chunks • Handles 5-10MB+ files")
-        st.caption("• Smart preprocessing • Context caching • Real-time progress")
-        
-        # Preprocessing options
-        with st.expander("⚙️ Advanced Processing Options"):
-            enable_preprocessing = st.checkbox("🧹 Enable Content Preprocessing", 
-                value=True, 
-                help="Remove marketing content, disclaimers, and email headers to focus on core information")
-            
-            if enable_preprocessing:
-                st.info("**Preprocessing will remove:**")
-                st.caption("• Email headers (From, To, Subject, etc.)")
-                st.caption("• Marketing disclaimers and legal notices")
-                st.caption("• Unsubscribe links and tracking URLs")  
-                st.caption("• Repetitive separators and boilerplate")
-                st.caption("• JPMorgan copyright and compliance text")
-                st.import streamlit as st
 import pandas as pd
 import json
 import os
