@@ -1028,9 +1028,6 @@ def process_extraction_with_rate_limiting(text, model):
         total_duration = time.time() - start_time
         # logger.info(f\"[{SESSION_ID}] EXTRACTION: "PROCESS_COMPLETE" - f"Extraction process complete: {len(all_people\")} people, {len(all_performance)} metrics from {len(chunks)} chunks, {len(failed_chunks)} failed (total duration: {total_duration:.2f}s)")
         
-        if failed_chunks:
-            # logger.info(f\"[{SESSION_ID}] EXTRACTION: "FAILED_CHUNKS" - f"Failed chunks: {failed_chunks}", "WARNING"\")
-        
         return all_people, all_performance
         
     except Exception as e:
