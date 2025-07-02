@@ -974,15 +974,20 @@ Extract everything you can find, even if incomplete. Be thorough!
         return [], []
 
 def process_extraction_with_rate_limiting(text, model):
-    """Process extraction with automatic rate limiting for paid tier"""
+    """Process extraction with optimized rate limiting for Gemini Flash 1.5"""
     start_time = time.time()
     
     try:
         text_length = len(text)
         console_log(f"Starting extraction process with {text_length} chars")
         
-        # Split into chunks if text is too long (paid tier can handle larger chunks)
-        max_chunk_size = 100000  # 100K chars for paid tier
+        # Optimized chunking for Gemini Flash 1.5 limits:
+        # - 4M tokens per minute (TPM)
+        # - 2000 requests per minute (RPM)
+        # - Assuming ~4 chars per token = ~16M chars per minute capacity
+        
+        # Use larger chunks to maximize efficiency while staying under limits
+        max_chunk_size = 500000  # 500K chars per chunk (much larger than before)
         chunks = []
         
         if len(text) <= max_chunk_size:
@@ -996,12 +1001,14 @@ def process_extraction_with_rate_limiting(text, model):
                 
                 # Find paragraph break for better chunking
                 if end_pos < len(text):
-                    break_pos = text.rfind('\n\n', current_pos, end_pos)
+                    # Look for paragraph breaks within last 10% of chunk
+                    search_start = max(current_pos, end_pos - int(max_chunk_size * 0.1))
+                    break_pos = text.rfind('\n\n', search_start, end_pos)
                     if break_pos > current_pos:
                         end_pos = break_pos + 2
                 
                 chunk = text[current_pos:end_pos].strip()
-                if len(chunk) > 500:  # Minimum chunk size
+                if len(chunk) > 1000:  # Minimum chunk size (reduced from 500)
                     chunks.append(chunk)
                     chunk_count += 1
                     console_log(f"Chunk {chunk_count}: {len(chunk)} chars (pos: {current_pos}-{end_pos})")
@@ -1012,34 +1019,60 @@ def process_extraction_with_rate_limiting(text, model):
         all_people = []
         all_performance = []
         failed_chunks = []
+        total_tokens_used = 0
         
-        # Process chunks with paid tier rate limiting (2000 RPM = ~33 per second)
-        delay_between_requests = 0.03  # 30ms delay for paid tier
-        console_log(f"Using {delay_between_requests}s delay between requests (2000 RPM)")
+        # Optimized rate limiting for Flash 1.5:
+        # - RPM: 2000/minute = 33.33/second → 30ms minimum delay
+        # - TPM: 4M/minute = 66.6K/second → track token usage
+        
+        base_delay = 0.03  # 30ms for RPM compliance
+        tokens_per_second_limit = 66000  # Conservative limit (90% of 66.6K)
+        
+        console_log(f"Rate limiting: {base_delay}s base delay, {tokens_per_second_limit} tokens/sec limit")
+        console_log(f"Estimated processing time: {len(chunks) * base_delay:.1f} seconds minimum")
         
         for i, chunk in enumerate(chunks):
             chunk_start_time = time.time()
             
             try:
+                # Update progress
+                progress = int((i / len(chunks)) * 100)
                 st.session_state.background_processing.update({
-                    'progress': int((i / len(chunks)) * 100),
-                    'status_message': f'Processing chunk {i+1}/{len(chunks)}...'
+                    'progress': progress,
+                    'status_message': f'Processing chunk {i+1}/{len(chunks)} ({len(chunk):,} chars)...'
                 })
                 
-                console_log(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
+                console_log(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk):,} chars)")
                 
+                # Estimate token usage (rough: 4 chars per token)
+                estimated_tokens = len(chunk) // 4
+                total_tokens_used += estimated_tokens
+                
+                # Process chunk
                 people, performance = extract_data_from_text(chunk, model)
                 
                 chunk_duration = time.time() - chunk_start_time
-                console_log(f"Chunk {i+1}/{len(chunks)} complete: {len(people)} people, {len(performance)} metrics (duration: {chunk_duration:.2f}s)")
+                console_log(f"Chunk {i+1}/{len(chunks)} complete: {len(people)} people, {len(performance)} metrics")
+                console_log(f"  Duration: {chunk_duration:.2f}s, Est. tokens: {estimated_tokens:,}")
                 
                 all_people.extend(people)
                 all_performance.extend(performance)
                 
-                # Rate limiting delay (except for last chunk)
+                # Intelligent rate limiting (skip delay for last chunk)
                 if i < len(chunks) - 1:
-                    console_log(f"Applying {delay_between_requests}s rate limit delay")
-                    time.sleep(delay_between_requests)
+                    # Calculate dynamic delay based on token usage rate
+                    elapsed_time = time.time() - start_time
+                    tokens_per_second = total_tokens_used / max(elapsed_time, 0.1)
+                    
+                    # Increase delay if approaching token limit
+                    if tokens_per_second > tokens_per_second_limit * 0.8:
+                        dynamic_delay = base_delay * 1.5
+                        console_log(f"High token rate detected ({tokens_per_second:.0f}/s), using {dynamic_delay:.3f}s delay")
+                    else:
+                        dynamic_delay = base_delay
+                    
+                    console_log(f"Rate limiting: {dynamic_delay:.3f}s delay (tokens/s: {tokens_per_second:.0f})")
+                    time.sleep(dynamic_delay)
                     
             except Exception as e:
                 chunk_duration = time.time() - chunk_start_time
@@ -1048,10 +1081,21 @@ def process_extraction_with_rate_limiting(text, model):
                 continue
         
         total_duration = time.time() - start_time
-        console_log(f"Extraction process complete: {len(all_people)} people, {len(all_performance)} metrics from {len(chunks)} chunks, {len(failed_chunks)} failed (total duration: {total_duration:.2f}s)")
+        avg_tokens_per_second = total_tokens_used / max(total_duration, 0.1)
+        
+        console_log(f"Extraction complete:")
+        console_log(f"  Results: {len(all_people)} people, {len(all_performance)} metrics")
+        console_log(f"  Chunks: {len(chunks)} total, {len(failed_chunks)} failed")
+        console_log(f"  Duration: {total_duration:.2f}s")
+        console_log(f"  Token usage: {total_tokens_used:,} tokens (~{avg_tokens_per_second:.0f} tokens/sec)")
+        console_log(f"  Efficiency: {len(chunks)/total_duration:.1f} chunks/sec")
         
         if failed_chunks:
             console_log(f"Failed chunks: {failed_chunks}", "WARNING")
+        
+        # Check if we're within rate limits
+        if avg_tokens_per_second > tokens_per_second_limit:
+            console_log(f"WARNING: Exceeded recommended token rate ({avg_tokens_per_second:.0f} > {tokens_per_second_limit})", "WARNING")
         
         return all_people, all_performance
         
@@ -1476,7 +1520,7 @@ with st.sidebar:
         st.error("Please install: pip install google-generativeai")
     
     # --- DUPLICATE DETECTION TESTING SECTION ---
-    if st.checkbox("🔍 Test Duplicate Detection", help="Debug and test duplicate detection logic"):
+    if st.checkbox("🔍 Test Duplicate Detection & Debug Extraction", help="Debug and test duplicate detection logic plus extraction debugging"):
         st.markdown("---")
         st.subheader("🧪 Duplicate Detection Testing")
         
@@ -1522,6 +1566,74 @@ with st.sidebar:
                     st.success(f"✅ NO DUPLICATE: Safe to add")
                 
                 st.info(f"Generated key: `{test_key}`")
+        
+        # --- EXTRACTION DEBUGGING SECTION ---
+        st.markdown("---")
+        st.subheader("🔬 Extraction Debugging")
+        
+        if api_key and model:
+            debug_text = st.text_area("Test Extraction on Small Sample:", 
+                value="Harrison Balistreri from Hitchwood is launching Inevitable Capital Management with a long/short strategy.", 
+                height=100)
+            
+            if st.button("🧪 Test Small Extraction"):
+                if debug_text.strip():
+                    console_log("Starting debug extraction test")
+                    st.info("🔍 Check your console/terminal for detailed debug logs!")
+                    
+                    with st.spinner("Testing extraction..."):
+                        try:
+                            people, performance = extract_data_from_text(debug_text, model)
+                            
+                            st.success(f"✅ Extraction test complete!")
+                            st.write(f"**Results**: {len(people)} people, {len(performance)} metrics found")
+                            
+                            if people:
+                                st.write("**People found:**")
+                                for i, person in enumerate(people):
+                                    with st.expander(f"Person {i+1}: {safe_get(person, 'name')}"):
+                                        st.json(person)
+                            
+                            if performance:
+                                st.write("**Performance found:**")
+                                for i, perf in enumerate(performance):
+                                    with st.expander(f"Metric {i+1}: {safe_get(perf, 'fund_name')}"):
+                                        st.json(perf)
+                            
+                            if not people and not performance:
+                                st.warning("⚠️ No data extracted. Check console logs for debugging details.")
+                                
+                        except Exception as e:
+                            st.error(f"❌ Extraction test failed: {e}")
+                            console_log(f"Debug extraction failed: {e}", "ERROR")
+                else:
+                    st.error("Please enter some test text")
+        else:
+            st.info("💡 Enter your Gemini API key above to enable extraction debugging")
+        
+        # Show extraction tips
+        with st.expander("📋 Extraction Troubleshooting Tips"):
+            st.markdown("""
+            **If extraction returns 0 results, check:**
+            
+            1. **Console Logs**: Look at your terminal/console for detailed debug output
+            2. **API Key**: Make sure your Gemini API key is valid and has credits
+            3. **Content Format**: Ensure the text contains clear person names and companies
+            4. **Network**: Check if you can reach Google's API endpoints
+            5. **Rate Limits**: If processing large files, you might hit rate limits
+            
+            **What should extract:**
+            - ✅ "John Smith joins Goldman Sachs as Managing Director"
+            - ✅ "Sarah Johnson leaves Citadel for Millennium Partners"  
+            - ✅ "Fund returned 12.5% in Q1"
+            - ✅ "AUM reached $2.5 billion"
+            
+            **What might not extract:**
+            - ❌ Only first names or initials
+            - ❌ Very generic titles like "Manager"
+            - ❌ Ambiguous company references
+            """)
+    
     
     # Show extraction results for review
     if st.session_state.background_processing.get('results', {}).get('people') or st.session_state.background_processing.get('results', {}).get('performance'):
