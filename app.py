@@ -2579,7 +2579,7 @@ if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed da
     log_type = st.selectbox("Select Log Type:", 
         ["user_actions", "extraction", "database", "api", "main"])
     
-    if st.button("Refresh Logs"):
+    # if st.button("Refresh Logs"):
         # logger.info(f\"[{SESSION_ID}] USER: "DEBUG_LOG_VIEW" - f"User viewed {log_type} logs"\")
     
     recent_logs = get_recent_logs(log_type, 20)
