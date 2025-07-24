@@ -508,81 +508,81 @@ def check_for_duplicates_in_extraction(people_data):
     return unique_people, duplicates
 
 # --- Test and Debug Functions ---
-def test_duplicate_detection():
-    """Test function to verify duplicate detection works correctly"""
-    test_cases = [
-        # Test case: [name1, company1, name2, company2, should_be_duplicate]
-        ["John Smith", "Goldman Sachs", "john smith", "goldman sachs", True],
-        ["John Smith", "Goldman Sachs Inc", "John Smith", "Goldman Sachs", True],
-        ["John Smith", "Goldman Sachs", "John Smith", "J.P. Morgan", False],
-        ["John Smith", "Goldman Sachs", "Jane Smith", "Goldman Sachs", False],
-        ["Li Wei Chen", "Hillhouse Capital Management", "Li Wei Chen", "Hillhouse Capital", True],
-        ["Dr. John Smith", "Goldman Sachs Ltd.", "John Smith", "Goldman Sachs", True],
-        ["John Smith Jr.", "Goldman Sachs Corp", "John Smith Jr", "Goldman Sachs Corporation", True],
-    ]
+# def test_duplicate_detection():
+#     """Test function to verify duplicate detection works correctly"""
+#     test_cases = [
+#         # Test case: [name1, company1, name2, company2, should_be_duplicate]
+#         ["John Smith", "Goldman Sachs", "john smith", "goldman sachs", True],
+#         ["John Smith", "Goldman Sachs Inc", "John Smith", "Goldman Sachs", True],
+#         ["John Smith", "Goldman Sachs", "John Smith", "J.P. Morgan", False],
+#         ["John Smith", "Goldman Sachs", "Jane Smith", "Goldman Sachs", False],
+#         ["Li Wei Chen", "Hillhouse Capital Management", "Li Wei Chen", "Hillhouse Capital", True],
+#         ["Dr. John Smith", "Goldman Sachs Ltd.", "John Smith", "Goldman Sachs", True],
+#         ["John Smith Jr.", "Goldman Sachs Corp", "John Smith Jr", "Goldman Sachs Corporation", True],
+#     ]
 
-    results = []
-    for name1, company1, name2, company2, expected in test_cases:
-        key1 = create_person_key(name1, company1)
-        key2 = create_person_key(name2, company2)
-        actual = (key1 == key2) if key1 and key2 else False
+#     results = []
+#     for name1, company1, name2, company2, expected in test_cases:
+#         key1 = create_person_key(name1, company1)
+#         key2 = create_person_key(name2, company2)
+#         actual = (key1 == key2) if key1 and key2 else False
 
-        results.append({
-            'test': f"{name1} @ {company1} vs {name2} @ {company2}",
-            'expected': expected,
-            'actual': actual,
-            'passed': expected == actual,
-            'key1': key1,
-            'key2': key2
-        })
+#         results.append({
+#             'test': f"{name1} @ {company1} vs {name2} @ {company2}",
+#             'expected': expected,
+#             'actual': actual,
+#             'passed': expected == actual,
+#             'key1': key1,
+#             'key2': key2
+#         })
 
-    return results
+#     return results
 
-def debug_person_keys():
-    """Debug function to show all person keys in database"""
-    keys = []
-    for person in st.session_state.people:
-        name = safe_get(person, 'name')
-        company = safe_get(person, 'current_company_name')
-        key = create_person_key(name, company)
-        keys.append({
-            'name': name,
-            'company': company,
-            'key': key,
-            'id': person['id']
-        })
-    return keys
+# def debug_person_keys():
+#     """Debug function to show all person keys in database"""
+#     keys = []
+#     for person in st.session_state.people:
+#         name = safe_get(person, 'name')
+#         company = safe_get(person, 'current_company_name')
+#         key = create_person_key(name, company)
+#         keys.append({
+#             'name': name,
+#             'company': company,
+#             'key': key,
+#             'id': person['id']
+#         })
+#     return keys
 
 # --- Data Persistence with Google Drive ---
-def debug_dataframe_structure(df):
-    """Debug function to understand CSV structure"""
-    try:
-        log_essential(f"DataFrame shape: {df.shape}")
-        log_essential(f"DataFrame columns: {list(df.columns)}")
+# def debug_dataframe_structure(df):
+#     """Debug function to understand CSV structure"""
+#     try:
+#         log_essential(f"DataFrame shape: {df.shape}")
+#         log_essential(f"DataFrame columns: {list(df.columns)}")
         
-        # Show first few rows
-        log_essential("First 3 rows:")
-        for i, row in df.head(3).iterrows():
-            log_essential(f"Row {i}: {dict(row)}")
+#         # Show first few rows
+#         log_essential("First 3 rows:")
+#         for i, row in df.head(3).iterrows():
+#             log_essential(f"Row {i}: {dict(row)}")
         
-        # Check Type column values
-        if 'Type' in df.columns:
-            type_counts = df['Type'].value_counts()
-            log_essential(f"Type counts: {dict(type_counts)}")
+#         # Check Type column values
+#         if 'Type' in df.columns:
+#             type_counts = df['Type'].value_counts()
+#             log_essential(f"Type counts: {dict(type_counts)}")
         
-        # Check for any null/empty values in key columns
-        key_columns = ['Type', 'Name', 'Company', 'Title']
-        for col in key_columns:
-            if col in df.columns:
-                null_count = df[col].isnull().sum()
-                empty_count = (df[col] == '').sum()
-                log_essential(f"Column '{col}': {null_count} nulls, {empty_count} empty strings")
+#         # Check for any null/empty values in key columns
+#         key_columns = ['Type', 'Name', 'Company', 'Title']
+#         for col in key_columns:
+#             if col in df.columns:
+#                 null_count = df[col].isnull().sum()
+#                 empty_count = (df[col] == '').sum()
+#                 log_essential(f"Column '{col}': {null_count} nulls, {empty_count} empty strings")
         
-        return True
+#         return True
         
-    except Exception as e:
-        log_essential(f"Error debugging dataframe: {e}")
-        return False
+#     except Exception as e:
+#         log_essential(f"Error debugging dataframe: {e}")
+#         return False
 
 # Updated dataframe_to_people_and_firms function with better error handling
 def dataframe_to_people_and_firms(df):
@@ -1846,75 +1846,6 @@ with st.sidebar:
     # Google Drive Status
     if drive_manager.service:
         st.success("✅ Google Drive Connected")
-        if drive_manager.service:
-            st.sidebar.markdown("**🔍 DEBUG INFO:**")
-            files = drive_manager.list_files()
-            st.sidebar.write(f"Files found: {len(files)}")
-            
-            for file in files:
-                st.sidebar.write(f"📄 {file['name']}")
-            
-            # Test loading
-            df = drive_manager.download_csv("hedge_fund_data_latest.csv")
-            if df is not None:
-                st.sidebar.success(f"✅ CSV loaded: {len(df)} rows")
-            else:
-                st.sidebar.error("❌ CSV not loaded")
-    # Add this in your sidebar after the "🔍 DEBUG INFO:" section
-    if drive_manager.service:
-        st.sidebar.markdown("**🔬 DETAILED DIAGNOSIS:**")
-        
-        try:
-            # Show exact service account being used
-            creds_info = st.secrets["google_service_account"]
-            service_email = creds_info['client_email']
-            st.sidebar.write("**Service Account Email:**")
-            st.sidebar.code(service_email)
-            
-            # Test if service account can access Drive at all
-            if st.sidebar.button("🧪 Test Drive Access"):
-                try:
-                    # Test basic Drive API
-                    all_files = drive_manager.service.files().list(pageSize=10).execute()
-                    files = all_files.get('files', [])
-                    st.sidebar.write(f"**Total files service account can see:** {len(files)}")
-                    
-                    if files:
-                        st.sidebar.success("✅ Service account can access Drive")
-                        for file in files[:3]:
-                            st.sidebar.write(f"- {file['name']}")
-                    else:
-                        st.sidebar.error("❌ Service account can't see ANY files")
-                    
-                    # Search for your specific folder
-                    folder_search = drive_manager.service.files().list(
-                        q="name='HedgeFund_Data' and mimeType='application/vnd.google-apps.folder'"
-                    ).execute()
-                    
-                    folders = folder_search.get('files', [])
-                    st.sidebar.write(f"**HedgeFund_Data folders found:** {len(folders)}")
-                    
-                    if folders:
-                        for folder in folders:
-                            st.sidebar.write(f"Folder ID: {folder['id']}")
-                    else:
-                        st.sidebar.error("❌ Can't find HedgeFund_Data folder")
-                    
-                except Exception as e:
-                    st.sidebar.error(f"❌ Drive API Error: {str(e)}")
-                    
-        except Exception as e:
-            st.sidebar.error(f"❌ Debug Error: {str(e)}")
-
-        # Show recent files
-        files = drive_manager.list_files()
-        if files:
-            st.markdown(f"**Drive Files ({len(files)}):**")
-            for file in files[:3]:  # Show first 3
-                file_size = file.get('size', 'Unknown')
-                if file_size != 'Unknown':
-                    file_size = f"{int(file_size)//1024}KB"
-                st.caption(f"📄 {file['name']} ({file_size})")
     else:
         st.error("❌ Google Drive Not Connected")
         st.info("Setup required - see setup guide")
@@ -3056,32 +2987,32 @@ with col2:
         st.caption("Asia-based profiles will appear here automatically when detected")
 
 # --- LOG FILE ACCESS FUNCTIONS ---
-def get_recent_logs(log_type="main", lines=50):
-    """Get recent log entries for monitoring"""
-    try:
-        if log_type == "main":
-            log_file = LOGS_DIR / 'hedge_fund_app.log'
-        elif log_type == "extraction":
-            log_file = LOGS_DIR / 'extraction.log'
-        elif log_type == "database":
-            log_file = LOGS_DIR / 'database.log'
-        elif log_type == "api":
-            log_file = LOGS_DIR / 'api.log'
-        elif log_type == "user_actions":
-            log_file = LOGS_DIR / 'user_actions.log'
-        else:
-            return []
+# def get_recent_logs(log_type="main", lines=50):
+#     """Get recent log entries for monitoring"""
+#     try:
+#         if log_type == "main":
+#             log_file = LOGS_DIR / 'hedge_fund_app.log'
+#         elif log_type == "extraction":
+#             log_file = LOGS_DIR / 'extraction.log'
+#         elif log_type == "database":
+#             log_file = LOGS_DIR / 'database.log'
+#         elif log_type == "api":
+#             log_file = LOGS_DIR / 'api.log'
+#         elif log_type == "user_actions":
+#             log_file = LOGS_DIR / 'user_actions.log'
+#         else:
+#             return []
 
-        if not log_file.exists():
-            return []
+#         if not log_file.exists():
+#             return []
 
-        with open(log_file, 'r', encoding='utf-8') as f:
-            all_lines = f.readlines()
-            return all_lines[-lines:] if len(all_lines) > lines else all_lines
+#         with open(log_file, 'r', encoding='utf-8') as f:
+#             all_lines = f.readlines()
+#             return all_lines[-lines:] if len(all_lines) > lines else all_lines
 
-    except Exception as e:
-        logger.error(f"Error reading log file {log_type}: {e}")
-        return []
+#     except Exception as e:
+#         logger.error(f"Error reading log file {log_type}: {e}")
+#         return []
 
 def log_session_summary():
     """Log session summary statistics"""
