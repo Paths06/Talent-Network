@@ -586,40 +586,48 @@ def debug_dataframe_structure(df):
 
 # Updated dataframe_to_people_and_firms function with better error handling
 def dataframe_to_people_and_firms(df):
-    """Convert DataFrame back to people and firms lists with enhanced debugging"""
+    """Convert DataFrame back to people, firms, and employment lists with employment history reconstruction"""
     try:
         if df is None or df.empty:
             log_essential("dataframe_to_people_and_firms: DataFrame is None or empty")
-            return [], []
+            return [], [], []
         
         # Debug the dataframe structure
         debug_dataframe_structure(df)
         
         people = []
         firms = []
+        employments = []
+        
+        # Track person IDs for employment linking
+        person_id_mapping = {}  # old_id -> new_id
         
         log_essential(f"Processing {len(df)} rows from CSV")
         
         for idx, row in df.iterrows():
             try:
-                # Get type with fallback
                 row_type = str(row.get('Type', '')).strip()
                 
                 if not row_type:
-                    log_essential(f"Row {idx}: No type specified, skipping")
                     continue
                 
-                # Get basic info with safe handling
                 name = str(row.get('Name', '')).strip()
                 company = str(row.get('Company', '')).strip()
                 
                 if not name or name.lower() in ['nan', 'none', '']:
-                    log_essential(f"Row {idx}: Invalid name '{name}', skipping")
                     continue
                 
                 if row_type.lower() == 'person':
+                    # Create new person
+                    new_person_id = str(uuid.uuid4())
+                    old_person_id = str(row.get('Person_ID', ''))
+                    
+                    # Track ID mapping for employment linking
+                    if old_person_id:
+                        person_id_mapping[old_person_id] = new_person_id
+                    
                     person = {
-                        "id": str(uuid.uuid4()),
+                        "id": new_person_id,
                         "name": name,
                         "current_title": str(row.get('Title', 'Unknown')).strip(),
                         "current_company_name": company if company else 'Unknown',
@@ -633,9 +641,48 @@ def dataframe_to_people_and_firms(df):
                         "created_date": datetime.now().isoformat(),
                         "last_updated": datetime.now().isoformat(),
                         "context_mentions": [],
-                        "is_asia_based": str(row.get('Asia_Based', 'No')).strip().lower() == 'yes' or str(row.get('Region', '')).strip().lower() == 'asia'
+                        "is_asia_based": str(row.get('Asia_Based', 'No')).strip().lower() == 'yes'
                     }
                     people.append(person)
+                    
+                elif row_type.lower() == 'employment':
+                    # Process employment record
+                    old_person_id = str(row.get('Person_ID', ''))
+                    
+                    if old_person_id in person_id_mapping:
+                        new_person_id = person_id_mapping[old_person_id]
+                        
+                        # Parse dates
+                        start_date = None
+                        end_date = None
+                        
+                        start_date_str = str(row.get('Start_Date', '')).strip()
+                        end_date_str = str(row.get('End_Date', '')).strip()
+                        
+                        if start_date_str and start_date_str != 'nan':
+                            try:
+                                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                            except:
+                                pass
+                        
+                        if end_date_str and end_date_str != 'nan':
+                            try:
+                                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+                            except:
+                                pass
+                        
+                        employment = {
+                            "id": str(uuid.uuid4()),
+                            "person_id": new_person_id,
+                            "company_name": company,
+                            "title": str(row.get('Title', 'Unknown')).strip(),
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "location": str(row.get('Location', 'Unknown')).strip(),
+                            "strategy": str(row.get('Expertise', 'Unknown')).strip(),
+                            "created_date": datetime.now().isoformat()
+                        }
+                        employments.append(employment)
                     
                 elif row_type.lower() == 'firm':
                     firm = {
@@ -653,32 +700,34 @@ def dataframe_to_people_and_firms(df):
                         "created_date": datetime.now().isoformat(),
                         "last_updated": datetime.now().isoformat(),
                         "context_mentions": [],
-                        "is_asia_based": str(row.get('Asia_Based', 'No')).strip().lower() == 'yes' or str(row.get('Region', '')).strip().lower() == 'asia'
+                        "is_asia_based": str(row.get('Asia_Based', 'No')).strip().lower() == 'yes'
                     }
                     firms.append(firm)
-                
-                else:
-                    log_essential(f"Row {idx}: Unknown type '{row_type}', skipping")
                     
             except Exception as row_error:
                 log_essential(f"Error processing row {idx}: {row_error}")
                 continue
         
-        log_essential(f"Conversion complete: {len(people)} people, {len(firms)} firms")
-        return people, firms
+        log_essential(f"Conversion complete: {len(people)} people, {len(firms)} firms, {len(employments)} employment records")
+        return people, firms, employments
         
     except Exception as e:
         log_essential(f"Error in dataframe_to_people_and_firms: {e}")
-        return [], []
+        return [], [], []
 
 def people_and_firms_to_dataframe(people, firms):
-    """Convert people and firms lists to DataFrame for CSV storage"""
+    """Convert people and firms lists to DataFrame for CSV storage - ENHANCED with employment data"""
     all_data = []
 
-    # Export people
+    # Export people with their current employment info
     for person in people:
+        # Get employment history for this person
+        person_employments = get_employments_by_person_id(person['id'])
+        
+        # Add current position as main record
         all_data.append({
             'Type': 'Person',
+            'Person_ID': person['id'],  # Add person ID for linking
             'Name': safe_get(person, 'name'),
             'Title': safe_get(person, 'current_title'),
             'Company': safe_get(person, 'current_company_name'),
@@ -686,13 +735,40 @@ def people_and_firms_to_dataframe(people, firms):
             'Email': safe_get(person, 'email'),
             'Expertise': safe_get(person, 'expertise'),
             'AUM': safe_get(person, 'aum_managed'),
-            'Asia_Based': 'Yes' if person.get('is_asia_based', False) else 'No'
+            'Asia_Based': 'Yes' if person.get('is_asia_based', False) else 'No',
+            'Is_Current': 'Yes',
+            'Start_Date': '',
+            'End_Date': '',
+            'Employment_ID': ''
         })
+        
+        # Add historical employment records
+        for emp in person_employments:
+            start_date_str = emp['start_date'].strftime('%Y-%m-%d') if emp.get('start_date') else ''
+            end_date_str = emp['end_date'].strftime('%Y-%m-%d') if emp.get('end_date') else ''
+            
+            all_data.append({
+                'Type': 'Employment',
+                'Person_ID': person['id'],
+                'Name': safe_get(person, 'name'),
+                'Title': safe_get(emp, 'title'),
+                'Company': safe_get(emp, 'company_name'),
+                'Location': safe_get(emp, 'location'),
+                'Email': '',
+                'Expertise': safe_get(emp, 'strategy'),
+                'AUM': '',
+                'Asia_Based': 'Yes' if person.get('is_asia_based', False) else 'No',
+                'Is_Current': 'No',
+                'Start_Date': start_date_str,
+                'End_Date': end_date_str,
+                'Employment_ID': emp['id']
+            })
 
     # Export firms
     for firm in firms:
         all_data.append({
             'Type': 'Firm',
+            'Person_ID': '',
             'Name': safe_get(firm, 'name'),
             'Title': safe_get(firm, 'strategy'),
             'Company': safe_get(firm, 'name'),
@@ -700,7 +776,11 @@ def people_and_firms_to_dataframe(people, firms):
             'Email': safe_get(firm, 'website'),
             'Expertise': safe_get(firm, 'firm_type'),
             'AUM': safe_get(firm, 'aum'),
-            'Asia_Based': 'Yes' if firm.get('is_asia_based', False) else 'No'
+            'Asia_Based': 'Yes' if firm.get('is_asia_based', False) else 'No',
+            'Is_Current': '',
+            'Start_Date': '',
+            'End_Date': '',
+            'Employment_ID': ''
         })
 
     return pd.DataFrame(all_data)
@@ -734,34 +814,41 @@ def save_data_to_drive():
         return False
 
 def load_data_from_drive():
-    """Load data from Google Drive CSV"""
+    """Load data from Google Drive CSV with employment history reconstruction"""
     try:
         if not drive_manager.service:
+            log_essential("load_data_from_drive: No Google Drive service")
             return [], [], []
 
         # Try to load the latest version first
+        log_essential("Attempting to load hedge_fund_data_latest.csv")
         df = drive_manager.download_csv("hedge_fund_data_latest.csv")
 
         if df is None:
-            # If no latest version, try to find the most recent timestamped version
+            log_essential("Latest version not found, looking for timestamped versions")
             files = drive_manager.list_files()
             hedge_fund_files = [f for f in files if f['name'].startswith('hedge_fund_data_') and f['name'].endswith('.csv')]
 
             if hedge_fund_files:
-                # Sort by modification time and get the latest
-                hedge_fund_files.sort(key=lambda x: x['modifiedTime'], reverse=True)
+                hedge_fund_files.sort(key=lambda x: x.get('modifiedTime', ''), reverse=True)
                 latest_file = hedge_fund_files[0]['name']
+                log_essential(f"Trying to load most recent file: {latest_file}")
                 df = drive_manager.download_csv(latest_file)
 
         if df is not None and not df.empty:
-            people, firms = dataframe_to_people_and_firms(df)
-            log_essential(f"Data loaded from Google Drive: {len(people)} people, {len(firms)} firms")
-            return people, firms, []  # No employments from CSV for now
-
-        return [], [], []
+            log_essential(f"Successfully loaded CSV with {len(df)} rows and {len(df.columns)} columns")
+            
+            # Convert dataframe to people, firms, AND employments
+            people, firms, employments = dataframe_to_people_and_firms(df)
+            
+            log_essential(f"Data loaded from Google Drive: {len(people)} people, {len(firms)} firms, {len(employments)} employment records")
+            return people, firms, employments
+        else:
+            log_essential("No valid dataframe loaded from Google Drive")
+            return [], [], []
 
     except Exception as e:
-        logger.error(f"Error loading data from Google Drive: {e}")
+        log_essential(f"Error loading data from Google Drive: {e}")
         return [], [], []
 
 # --- Asia Detection and Tagging Functions ---
@@ -1417,33 +1504,51 @@ def get_employments_by_person_id(person_id):
     return [e for e in st.session_state.employments if e['person_id'] == person_id]
 
 def get_shared_work_history(person_id):
-    """Get people who have overlapping work periods at the same companies"""
-    person_employments = get_employments_by_person_id(person_id)
-    shared_history = []
-
-    # Get all companies this person has worked at with their periods
-    person_company_periods = []
-    for emp in person_employments:
-        if emp.get('start_date'):
-            person_company_periods.append({
-                'company': emp['company_name'],
-                'start_date': emp['start_date'],
-                'end_date': emp.get('end_date'),
-                'title': emp['title'],
-                'location': emp.get('location', 'Unknown')
-            })
-
-    # Find overlapping colleagues
-    for other_person in st.session_state.people:
-        if other_person['id'] == person_id:
-            continue
-
-        other_employments = get_employments_by_person_id(other_person['id'])
-        other_company_periods = []
-
-        for emp in other_employments:
+    """Get people who have overlapping work periods at the same companies - ENHANCED with debugging"""
+    try:
+        log_essential(f"Getting shared work history for person: {person_id}")
+        
+        person_employments = get_employments_by_person_id(person_id)
+        log_essential(f"Found {len(person_employments)} employment records for this person")
+        
+        if not person_employments:
+            log_essential("No employment records found, checking current company...")
+            # If no employment history, try to use current company info
+            person = get_person_by_id(person_id)
+            if person:
+                current_company = safe_get(person, 'current_company_name')
+                log_essential(f"Person's current company: {current_company}")
+                
+                # Look for others at the same current company
+                colleagues = []
+                for other_person in st.session_state.people:
+                    if other_person['id'] != person_id:
+                        other_current_company = safe_get(other_person, 'current_company_name')
+                        if other_current_company == current_company and current_company != 'Unknown':
+                            colleagues.append({
+                                "colleague_name": safe_get(other_person, 'name'),
+                                "colleague_id": other_person['id'],
+                                "shared_company": current_company,
+                                "colleague_current_company": other_current_company,
+                                "colleague_current_title": safe_get(other_person, 'current_title'),
+                                "overlap_days": 0,
+                                "overlap_duration": "Current colleagues",
+                                "overlap_period": "Present",
+                                "connection_strength": "Current"
+                            })
+                
+                log_essential(f"Found {len(colleagues)} current colleagues")
+                return colleagues
+            
+            return []
+        
+        shared_history = []
+        
+        # Get all companies this person has worked at with their periods
+        person_company_periods = []
+        for emp in person_employments:
             if emp.get('start_date'):
-                other_company_periods.append({
+                person_company_periods.append({
                     'company': emp['company_name'],
                     'start_date': emp['start_date'],
                     'end_date': emp.get('end_date'),
@@ -1451,62 +1556,88 @@ def get_shared_work_history(person_id):
                     'location': emp.get('location', 'Unknown')
                 })
 
-        # Check for overlapping periods at same companies
-        for person_period in person_company_periods:
-            for other_period in other_company_periods:
-                if person_period['company'] == other_period['company']:
-                    # Calculate overlap
-                    overlap = calculate_date_overlap(
-                        person_period['start_date'], person_period['end_date'],
-                        other_period['start_date'], other_period['end_date']
-                    )
+        log_essential(f"Person worked at {len(person_company_periods)} companies with dates")
 
-                    if overlap:
-                        overlap_start, overlap_end, overlap_days = overlap
+        # Find overlapping colleagues
+        for other_person in st.session_state.people:
+            if other_person['id'] == person_id:
+                continue
 
-                        # Calculate overlap duration
-                        if overlap_days >= 365:
-                            duration_str = f"{overlap_days // 365} year(s)"
-                        elif overlap_days >= 30:
-                            duration_str = f"{overlap_days // 30} month(s)"
-                        else:
-                            duration_str = f"{overlap_days} day(s)"
+            other_employments = get_employments_by_person_id(other_person['id'])
+            other_company_periods = []
 
-                        overlap_period = f"{overlap_start.strftime('%b %Y')} - {overlap_end.strftime('%b %Y')}"
+            for emp in other_employments:
+                if emp.get('start_date'):
+                    other_company_periods.append({
+                        'company': emp['company_name'],
+                        'start_date': emp['start_date'],
+                        'end_date': emp.get('end_date'),
+                        'title': emp['title'],
+                        'location': emp.get('location', 'Unknown')
+                    })
 
-                        shared_history.append({
-                            "colleague_name": safe_get(other_person, 'name'),
-                            "colleague_id": other_person['id'],
-                            "shared_company": person_period['company'],
-                            "colleague_current_company": safe_get(other_person, 'current_company_name'),
-                            "colleague_current_title": safe_get(other_person, 'current_title'),
-                            "overlap_days": overlap_days,
-                            "overlap_duration": duration_str,
-                            "overlap_period": overlap_period,
-                            "connection_strength": "Strong" if overlap_days >= 365 else "Medium" if overlap_days >= 90 else "Brief"
-                        })
+            # Check for overlapping periods at same companies
+            for person_period in person_company_periods:
+                for other_period in other_company_periods:
+                    if person_period['company'] == other_period['company']:
+                        # Calculate overlap
+                        overlap = calculate_date_overlap(
+                            person_period['start_date'], person_period['end_date'],
+                            other_period['start_date'], other_period['end_date']
+                        )
 
-    # Remove duplicates and sort by connection strength
-    unique_shared = {}
-    for item in shared_history:
-        key = f"{item['colleague_id']}_{item['shared_company']}"
-        if key not in unique_shared:
-            unique_shared[key] = item
-        else:
-            existing = unique_shared[key]
-            if item['overlap_days'] > existing['overlap_days']:
+                        if overlap:
+                            overlap_start, overlap_end, overlap_days = overlap
+
+                            # Calculate overlap duration
+                            if overlap_days >= 365:
+                                duration_str = f"{overlap_days // 365} year(s)"
+                            elif overlap_days >= 30:
+                                duration_str = f"{overlap_days // 30} month(s)"
+                            else:
+                                duration_str = f"{overlap_days} day(s)"
+
+                            overlap_period = f"{overlap_start.strftime('%b %Y')} - {overlap_end.strftime('%b %Y')}"
+
+                            shared_history.append({
+                                "colleague_name": safe_get(other_person, 'name'),
+                                "colleague_id": other_person['id'],
+                                "shared_company": person_period['company'],
+                                "colleague_current_company": safe_get(other_person, 'current_company_name'),
+                                "colleague_current_title": safe_get(other_person, 'current_title'),
+                                "overlap_days": overlap_days,
+                                "overlap_duration": duration_str,
+                                "overlap_period": overlap_period,
+                                "connection_strength": "Strong" if overlap_days >= 365 else "Medium" if overlap_days >= 90 else "Brief"
+                            })
+
+        # Remove duplicates and sort by connection strength
+        unique_shared = {}
+        for item in shared_history:
+            key = f"{item['colleague_id']}_{item['shared_company']}"
+            if key not in unique_shared:
                 unique_shared[key] = item
+            else:
+                existing = unique_shared[key]
+                if item['overlap_days'] > existing['overlap_days']:
+                    unique_shared[key] = item
 
-    # Sort by connection strength
-    def sort_key(conn):
-        strength_order = {"Strong": 0, "Medium": 1, "Brief": 2}
-        return (
-            strength_order.get(conn.get('connection_strength', 'Brief'), 2),
-            -conn.get('overlap_days', 0),
-            conn['colleague_name']
-        )
+        # Sort by connection strength
+        def sort_key(conn):
+            strength_order = {"Strong": 0, "Medium": 1, "Brief": 2, "Current": 0}
+            return (
+                strength_order.get(conn.get('connection_strength', 'Brief'), 2),
+                -conn.get('overlap_days', 0),
+                conn['colleague_name']
+            )
 
-    return sorted(list(unique_shared.values()), key=sort_key)
+        result = sorted(list(unique_shared.values()), key=sort_key)
+        log_essential(f"Found {len(result)} shared work connections")
+        return result
+        
+    except Exception as e:
+        log_essential(f"Error in get_shared_work_history: {e}")
+        return []
 
 def add_employment_with_dates(person_id, company_name, title, start_date, end_date=None, location="Unknown", strategy="Unknown"):
     """Add employment record with proper date validation"""
