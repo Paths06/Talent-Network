@@ -204,57 +204,150 @@ class GoogleDriveManager:
             return False
 
     def download_csv(self, filename):
-        """Download CSV from Google Drive as DataFrame"""
+    """Download CSV from Google Drive as DataFrame"""
         try:
-            if not self.service or not self.folder_id:
+            if not self.service:
+                log_essential("download_csv: No service available")
                 return None
-
-            # Find the file
-            results = self.service.files().list(
-                q=f"name='{filename}' and parents in '{self.folder_id}'",
-                spaces='drive'
-            ).execute()
-
-            files = results.get('files', [])
-
-            if not files:
-                log_essential(f"File not found in Google Drive: {filename}")
+    
+            log_essential(f"Attempting to download: {filename}")
+    
+            # First try to find in our designated folder
+            file_id = None
+            if self.folder_id:
+                results = self.service.files().list(
+                    q=f"name='{filename}' and parents in '{self.folder_id}'",
+                    spaces='drive',
+                    fields='files(id, name, parents)'
+                ).execute()
+    
+                files = results.get('files', [])
+                if files:
+                    file_id = files[0]['id']
+                    log_essential(f"Found {filename} in HedgeFund_Data folder (ID: {file_id})")
+    
+            # If not found in folder, search globally
+            if not file_id:
+                log_essential(f"File {filename} not found in folder, searching globally...")
+                global_results = self.service.files().list(
+                    q=f"name='{filename}' and mimeType='text/csv'",
+                    spaces='drive',
+                    fields='files(id, name, parents)'
+                ).execute()
+    
+                global_files = global_results.get('files', [])
+                if global_files:
+                    file_id = global_files[0]['id']
+                    log_essential(f"Found {filename} globally (ID: {file_id})")
+                    
+                    # Move it to our folder for future use
+                    if self.folder_id:
+                        try:
+                            previous_parents = ",".join(global_files[0].get('parents', []))
+                            self.service.files().update(
+                                fileId=file_id,
+                                addParents=self.folder_id,
+                                removeParents=previous_parents
+                            ).execute()
+                            log_essential(f"Moved {filename} to HedgeFund_Data folder")
+                        except Exception as move_error:
+                            log_essential(f"Could not move {filename}: {move_error}")
+    
+            if not file_id:
+                log_essential(f"File not found anywhere: {filename}")
                 return None
-
-            file_id = files[0]['id']
-
+    
             # Download the file
+            log_essential(f"Downloading file {filename} (ID: {file_id})")
             request = self.service.files().get_media(fileId=file_id)
             file_buffer = BytesIO()
             downloader = MediaIoBaseDownload(file_buffer, request)
-
+    
             done = False
             while done is False:
                 status, done = downloader.next_chunk()
-
+    
             # Read CSV data
             file_buffer.seek(0)
             df = pd.read_csv(file_buffer)
-            log_essential(f"Downloaded file from Google Drive: {filename} ({len(df)} rows)")
+            log_essential(f"Successfully downloaded {filename}: {len(df)} rows, {len(df.columns)} columns")
+            
+            # Log first few column names for debugging
+            if len(df.columns) > 0:
+                log_essential(f"CSV columns: {list(df.columns[:5])}")
+            
             return df
-
+    
         except Exception as e:
-            log_essential(f"Error downloading CSV from Google Drive: {e}")
+            log_essential(f"Error downloading CSV {filename}: {e}")
             return None
 
     def list_files(self):
         """List all files in the data folder"""
         try:
             if not self.service or not self.folder_id:
+                log_essential("list_files: No service or folder_id")
                 return []
-
+    
+            # First, let's see what's actually in our target folder
             results = self.service.files().list(
                 q=f"parents in '{self.folder_id}'",
                 spaces='drive',
-                fields='files(id, name, modifiedTime, size)'
+                fields='files(id, name, modifiedTime, size, mimeType)'
             ).execute()
-
-            return results.get('files', [])
+    
+            files_in_folder = results.get('files', [])
+            log_essential(f"Files found in HedgeFund_Data folder: {len(files_in_folder)}")
+            
+            for file in files_in_folder:
+                log_essential(f"File in folder: {file['name']} (type: {file.get('mimeType', 'unknown')})")
+    
+            # If no files in folder, let's check if they're in root and move them
+            if len(files_in_folder) == 0:
+                log_essential("No files in HedgeFund_Data folder, checking root directory...")
+                
+                # Look for our CSV files in root directory
+                root_results = self.service.files().list(
+                    q="name contains 'hedge_fund_data' and mimeType='text/csv'",
+                    spaces='drive',
+                    fields='files(id, name, modifiedTime, size, parents)'
+                ).execute()
+                
+                root_files = root_results.get('files', [])
+                log_essential(f"Found {len(root_files)} hedge fund CSV files in root")
+                
+                # Move files to our folder
+                for file in root_files:
+                    try:
+                        log_essential(f"Moving file {file['name']} to HedgeFund_Data folder")
+                        
+                        # Remove from current parents and add to our folder
+                        previous_parents = ",".join(file.get('parents', []))
+                        
+                        self.service.files().update(
+                            fileId=file['id'],
+                            addParents=self.folder_id,
+                            removeParents=previous_parents,
+                            fields='id, parents'
+                        ).execute()
+                        
+                        log_essential(f"Successfully moved {file['name']} to HedgeFund_Data folder")
+                        
+                    except Exception as move_error:
+                        log_essential(f"Error moving file {file['name']}: {move_error}")
+                
+                # Now list files again after moving
+                results = self.service.files().list(
+                    q=f"parents in '{self.folder_id}'",
+                    spaces='drive',
+                    fields='files(id, name, modifiedTime, size)'
+                ).execute()
+                
+                files_in_folder = results.get('files', [])
+                log_essential(f"Files in folder after moving: {len(files_in_folder)}")
+    
+            return files_in_folder
+    
         except Exception as e:
             log_essential(f"Error listing files: {e}")
             return []
