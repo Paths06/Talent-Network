@@ -1126,7 +1126,7 @@ def init_sample_data():
 
 def initialize_session_state():
     """Initialize session state with saved or sample data"""
-    people, firms, employments = load_data()
+    people, firms, employments = load_data_from_drive()
     
     # If no saved data, use sample data
     if not people and not firms:
@@ -1505,7 +1505,7 @@ def add_employment_with_dates(person_id, company_name, title, start_date, end_da
         }
         
         st.session_state.employments.append(new_employment)
-        save_data()
+        save_data_to_drive()
         return True
         
     except Exception as e:
@@ -1658,7 +1658,7 @@ try:
     if 'asia_tagged' not in st.session_state:
         log_user_action("ASIA_TAGGING_START", "Starting Asia classification for existing profiles")
         asia_people_count, asia_firms_count = tag_all_existing_profiles()
-        save_data()  # Save the Asia tags
+        save_data_to_drive()  # Save the Asia tags
         st.session_state.asia_tagged = True
         log_user_action("ASIA_TAGGING_COMPLETE", f"Tagged {asia_people_count} Asia people and {asia_firms_count} Asia firms")
         
@@ -1668,6 +1668,26 @@ except Exception as init_error:
     log_user_action("APP_INIT_ERROR", f"Initialization failed: {init_error}")
     st.error(f"Initialization error: {init_error}")
     st.stop()
+
+# --- Google Drive Authentication Setup ---
+if GDRIVE_AVAILABLE:
+    # Try to get credentials from secrets
+    credentials_dict = None
+    try:
+        credentials_dict = st.secrets.get("google_service_account")
+        if credentials_dict:
+            if drive_manager.authenticate(credentials_dict):
+                if drive_manager.find_or_create_folder():
+                    st.sidebar.success("🔗 Google Drive Connected")
+                else:
+                    st.sidebar.error("❌ Failed to setup Drive folder")
+            else:
+                st.sidebar.error("❌ Drive authentication failed")
+        else:
+            st.sidebar.warning("⚠️ Google Drive credentials not found in secrets")
+            st.sidebar.info("Add your service account credentials to .streamlit/secrets.toml")
+    except Exception as e:
+        st.sidebar.error(f"❌ Drive setup error: {e}")
 
 # --- HEADER ---
 col1, col2 = st.columns([3, 1])
@@ -1699,29 +1719,46 @@ with col2:
 # --- SIDEBAR: Data Extraction ---
 with st.sidebar:
     st.title("Data Extraction")
-    
+
+    # Google Drive Status
+    if drive_manager.service:
+        st.success("✅ Google Drive Connected")
+
+        # Show recent files
+        files = drive_manager.list_files()
+        if files:
+            st.markdown(f"**Drive Files ({len(files)}):**")
+            for file in files[:3]:  # Show first 3
+                file_size = file.get('size', 'Unknown')
+                if file_size != 'Unknown':
+                    file_size = f"{int(file_size)//1024}KB"
+                st.caption(f"📄 {file['name']} ({file_size})")
+    else:
+        st.error("❌ Google Drive Not Connected")
+        st.info("Setup required - see setup guide")
+
     # API Key Setup
     api_key = None
     try:
         api_key = st.secrets.get("GEMINI_API_KEY")
         if api_key:
-            st.success("API key loaded")
+            st.success("🔑 API key loaded")
     except:
         pass
-    
+
     if not api_key:
         api_key = st.text_input("Gemini API Key", type="password")
-    
+
     # Setup model
     model = None
     if api_key and GENAI_AVAILABLE:
         model = setup_gemini(api_key)
-        
+
         st.markdown("---")
         st.subheader("Extract from Content")
-        
+
         input_method = st.radio("Input method:", ["Text", "File"])
-        
+
         newsletter_text = ""
         if input_method == "Text":
             newsletter_text = st.text_area("Content:", height=150, 
@@ -1731,16 +1768,16 @@ with st.sidebar:
             if uploaded_file:
                 try:
                     success, content, error_msg, encoding_used = load_file_content_enhanced(uploaded_file)
-                    
+
                     if success:
                         newsletter_text = content
                         st.success(f"File loaded ({len(newsletter_text):,} characters)")
-                        
+
                         if error_msg:
                             st.warning(error_msg)
                     else:
                         st.error(error_msg)
-                        
+
                 except Exception as file_error:
                     st.error(f"Error loading file: {str(file_error)}")
 
@@ -1755,28 +1792,28 @@ with st.sidebar:
             else:
                 # Start background processing
                 log_user_action("EXTRACTION_START", f"Starting extraction with {len(newsletter_text)} characters using model {model.model_id}")
-                
+
                 st.session_state.background_processing = {
                     'is_running': True,
                     'progress': 0,
                     'status_message': 'Starting extraction...',
                     'results': {'people': [], 'performance': []}
                 }
-                
+
                 with st.spinner("Extracting data..."):
                     try:
                         people, performance = process_extraction_with_rate_limiting(newsletter_text, model)
-                        
+
                         st.session_state.background_processing = {
                             'is_running': False,
                             'progress': 100,
                             'status_message': f'Complete: {len(people)} people, {len(performance)} metrics',
                             'results': {'people': people, 'performance': performance}
                         }
-                        
+
                         log_user_action("EXTRACTION_SUCCESS", f"Extraction complete: {len(people)} people, {len(performance)} metrics found")
                         st.success(f"Extraction complete! Found {len(people)} people and {len(performance)} metrics")
-                        
+
                     except Exception as e:
                         log_user_action("EXTRACTION_ERROR", f"Extraction failed: {e}")
                         st.error(f"Extraction failed: {e}")
@@ -1789,14 +1826,14 @@ with st.sidebar:
     if st.checkbox("🔍 Test Duplicate Detection", help="Debug and test duplicate detection logic"):
         st.markdown("---")
         st.subheader("🧪 Duplicate Detection Testing")
-        
+
         # Run tests
         if st.button("Run Duplicate Tests"):
             test_results = test_duplicate_detection()
-            
+
             passed_tests = [r for r in test_results if r['passed']]
             failed_tests = [r for r in test_results if not r['passed']]
-            
+
             if failed_tests:
                 st.error(f"❌ {len(failed_tests)} tests failed:")
                 for test in failed_tests:
@@ -1805,7 +1842,7 @@ with st.sidebar:
                     st.write(f"  Keys: {test['key1']} vs {test['key2']}")
             else:
                 st.success(f"✅ All {len(test_results)} tests passed!")
-        
+
         # Show current database keys
         if st.button("Show Database Keys"):
             keys = debug_person_keys()
@@ -1815,51 +1852,51 @@ with st.sidebar:
                     st.write(f"• `{key_info['key']}` - {key_info['name']} at {key_info['company']}")
             else:
                 st.write("No people in database")
-        
+
         # Manual duplicate test
         st.markdown("**Manual Duplicate Test:**")
         test_name = st.text_input("Test Name:", value="John Smith")
         test_company = st.text_input("Test Company:", value="Goldman Sachs")
-        
+
         if st.button("Check for Duplicate"):
             if test_name and test_company:
                 existing = find_existing_person_strict(test_name, test_company)
                 test_key = create_person_key(test_name, test_company)
-                
+
                 if existing:
                     st.error(f"🚫 DUPLICATE FOUND: {safe_get(existing, 'name')} at {safe_get(existing, 'current_company_name')}")
                 else:
                     st.success(f"✅ NO DUPLICATE: Safe to add")
-                
+
                 st.info(f"Generated key: `{test_key}`")
-    
+
     # Show extraction results for review
     if st.session_state.background_processing.get('results', {}).get('people') or st.session_state.background_processing.get('results', {}).get('performance'):
         st.markdown("---")
         st.subheader("Review Results")
-        
+
         results = st.session_state.background_processing['results']
         people_results = results.get('people', [])
         performance_results = results.get('performance', [])
-        
+
         if people_results:
             st.markdown(f"**People ({len(people_results)})**")
-            
+
             # REAL-TIME duplicate checking with visual feedback
             valid_people = []
             duplicate_people = []
-            
+
             for i, person in enumerate(people_results[:5]):  # Show first 5
                 name = safe_get(person, 'name', '').strip()
                 company = person.get('current_company', person.get('company', '')).strip()
-                
+
                 # Real-time duplicate check
                 existing_person = find_existing_person_strict(name, company)
                 person_key = create_person_key(name, company)
-                
+
                 with st.container(border=True):
                     col1, col2 = st.columns([3, 1])
-                    
+
                     with col1:
                         if existing_person:
                             st.error(f"🚫 **DUPLICATE**: {name}")
@@ -1872,72 +1909,63 @@ with st.sidebar:
                             st.caption(f"✓ {safe_get(person, 'current_title')} at {company}")
                             st.caption(f"🔑 Key: `{person_key}`")
                             valid_people.append(person)
-                    
+
                     with col2:
                         if existing_person:
                             st.error("BLOCKED")
                         else:
                             st.success("ALLOWED")
-            
+
             # Show summary
             if len(people_results) > 5:
                 st.info(f"Showing 5 of {len(people_results)} people. Click 'Save All' to process all.")
-            
+
             st.markdown(f"**Summary**: {len(valid_people)} new, {len(duplicate_people)} duplicates blocked")
-        
+
         if performance_results:
             st.markdown(f"**Metrics ({len(performance_results)})**")
             for i, metric in enumerate(performance_results[:2]):  # Show first 2
                 with st.container(border=True):
                     st.caption(f"**{safe_get(metric, 'fund_name')}**")
                     st.caption(f"{safe_get(metric, 'metric_type')}: {safe_get(metric, 'value')}")
-        
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Save All", use_container_width=True):
                 # First, remove internal duplicates from extraction data
                 unique_people, internal_duplicates = check_for_duplicates_in_extraction(people_results)
-                
+
                 if internal_duplicates:
                     st.warning(f"⚠️ Removed {len(internal_duplicates)} internal duplicates from extraction")
-                
+
                 # Now process unique people with strict duplicate checking
                 saved_count = 0
                 blocked_count = 0
                 invalid_count = 0
                 blocked_details = []
-                
+
                 for person_data in unique_people:
                     name = safe_get(person_data, 'name', '').strip()
                     company_name = person_data.get('current_company', person_data.get('company', '')).strip()
-                    
-                    # Debug logging
-                    st.write(f"🔍 **Processing**: {name} at {company_name}")
-                    
+
                     # Validate required fields
                     if not name or not company_name or name == 'Unknown' or company_name == 'Unknown':
                         invalid_count += 1
-                        st.write(f"  ❌ **Invalid**: Missing name or company")
                         continue
-                    
+
                     # STRICT duplicate check - block if exists
                     existing_person = find_existing_person_strict(name, company_name)
                     person_key = create_person_key(name, company_name)
-                    
-                    st.write(f"  🔑 **Key**: `{person_key}`")
-                    
+
                     if existing_person:
                         blocked_count += 1
                         blocked_details.append(f"• {name} at {company_name} (Key: {person_key})")
-                        st.write(f"  🚫 **BLOCKED**: Duplicate found - {safe_get(existing_person, 'name')} at {safe_get(existing_person, 'current_company_name')}")
                         logger.warning(f"BLOCKED DUPLICATE: {name} at {company_name} - already exists")
                         continue
-                    
-                    st.write(f"  ✅ **CREATING**: New person")
-                    
+
                     # Only create if no duplicate exists
                     new_person_id = str(uuid.uuid4())
-                    
+
                     new_person = {
                         "id": new_person_id,
                         "name": name,
@@ -1961,20 +1989,18 @@ with st.sidebar:
                             'date_added': datetime.now().isoformat()
                         }]
                     }
-                    
+
                     # FINAL SAFETY CHECK before adding to database
                     final_check = find_existing_person_strict(new_person['name'], new_person['current_company_name'])
                     if final_check:
-                        st.write(f"  ⚠️ **FINAL CHECK BLOCKED**: Duplicate detected just before save!")
                         blocked_count += 1
                         continue
-                    
+
                     st.session_state.people.append(new_person)
-                    st.write(f"  ✅ **ADDED TO DATABASE**: Successfully created")
-                    
+
                     # Tag as Asia-based
                     tag_profile_as_asia(new_person, 'person')
-                    
+
                     # Add firm if doesn't exist
                     if not get_firm_by_name(company_name):
                         new_firm = {
@@ -1994,10 +2020,10 @@ with st.sidebar:
                             "context_mentions": []
                         }
                         st.session_state.firms.append(new_firm)
-                        
+
                         # Tag firm as Asia-based
                         tag_profile_as_asia(new_firm, 'firm')
-                    
+
                     # Add employment record
                     add_employment_with_dates(
                         new_person_id, company_name, 
@@ -2006,36 +2032,36 @@ with st.sidebar:
                         safe_get(person_data, 'location', 'Unknown'), 
                         safe_get(person_data, 'expertise', 'Unknown')
                     )
-                    
+
                     saved_count += 1
-                
-                save_data()
-                
+
+                # Save to Google Drive
+                save_data_to_drive()
+
                 # Show detailed results
                 if saved_count > 0:
-                    st.success(f"✅ Successfully saved {saved_count} new people!")
-                
+                    st.success(f"✅ Successfully saved {saved_count} new people to Google Drive!")
+
                 if blocked_count > 0:
                     st.error(f"🚫 Blocked {blocked_count} duplicates (already exist):")
                     with st.expander("View blocked duplicates"):
                         for detail in blocked_details:
                             st.write(detail)
-                
+
                 if invalid_count > 0:
                     st.warning(f"⚠️ Skipped {invalid_count} invalid entries (missing name/company)")
-                
+
                 if len(internal_duplicates) > 0:
                     st.info(f"🔄 Removed {len(internal_duplicates)} internal duplicates from extraction")
-                
+
                 # Clear results
                 st.session_state.background_processing['results'] = {'people': [], 'performance': []}
                 st.rerun()
-        
+
         with col2:
             if st.button("Discard", use_container_width=True):
                 st.session_state.background_processing['results'] = {'people': [], 'performance': []}
                 st.rerun()
-
 # --- MAIN CONTENT AREA ---
 
 # Global Search Bar
