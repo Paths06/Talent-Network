@@ -1,3 +1,4 @@
+import streamlit as st
 import pandas as pd
 import json
 import os
@@ -7,13 +8,21 @@ import plotly.express as px
 import plotly.graph_objects as go
 import time
 from pathlib import Path
+import logging
 import threading
 import queue
 import re
-
-# Additional imports for enhanced export functionality
-import zipfile
 from io import BytesIO, StringIO
+import zipfile
+
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+    GDRIVE_AVAILABLE = True
+except ImportError:
+    GDRIVE_AVAILABLE = False
+    st.error("Google Drive integration not available. Please install: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client")
 
 # Try to import openpyxl for Excel exports
 try:
@@ -29,19 +38,71 @@ try:
 except ImportError:
     GENAI_AVAILABLE = False
 
-# Simple console logging
+# Configure minimal logging - only essential events
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+
+# Create logs directory
+LOGS_DIR = Path("logs")
+LOGS_DIR.mkdir(exist_ok=True)
+
+# Configure main logger - minimal logging
+logging.basicConfig(
+    level=logging.WARNING,  # Only warnings and errors
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        RotatingFileHandler(
+            LOGS_DIR / 'hedge_fund_app.log',
+            maxBytes=5*1024*1024,  # 5MB
+            backupCount=2
+        )
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+# Essential-only loggers
+# logger = logging.getLogger('extraction')
+# extraction_handler = RotatingFileHandler(LOGS_DIR / 'extraction.log', maxBytes=2*1024*1024, backupCount=1)
+# extraction_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+# logger.addHandler(extraction_handler)
+# logger.setLevel(logging.INFO)
+
+# Session tracking (minimal)
 if 'session_id' not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())[:8]
 
 SESSION_ID = st.session_state.session_id
 
-def console_log(message, type="INFO"):
-    """Simple console logging"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] [{SESSION_ID}] {type}: {message}")
+def log_essential(message):
+    """Log only essential events"""
+    logger.info(f"[{SESSION_ID}] {message}")
 
-# Session start log
-console_log(f"Session started")
+def log_extraction_progress(step, details=""):
+    """Log extraction progress only"""
+    logger.info(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
+
+def log_extraction_step(step, details="", level="INFO"):
+    """Log extraction step with level"""
+    if level == "ERROR":
+        logger.error(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
+    elif level == "WARNING":
+        logger.warning(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
+    else:
+        logger.info(f"[{SESSION_ID}] EXTRACTION: {step} - {details}")
+
+def log_profile_saved(profile_type, name, company=""):
+    """Log when profiles are saved"""
+    company_str = f" at {company}" if company else ""
+    logger.info(f"[{SESSION_ID}] SAVED: {profile_type} - {name}{company_str}")
+
+def log_user_action(action, details=""):
+    """Log user actions"""
+    logger.info(f"[{SESSION_ID}] USER: {action} - {details}")
+
+# Minimal session start log
+log_essential(f"Session started")
 
 # Configure page
 st.set_page_config(
@@ -50,6 +111,166 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+# --- Google Drive Integration ---
+class GoogleDriveManager:
+    def __init__(self):
+        self.service = None
+        self.folder_id = None
+
+    def authenticate(self, credentials_dict):
+        """Authenticate with Google Drive using service account credentials"""
+        try:
+            credentials = service_account.Credentials.from_service_account_info(
+                credentials_dict,
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+            self.service = build('drive', 'v3', credentials=credentials)
+            log_essential("Google Drive authentication successful")
+            return True
+        except Exception as e:
+            log_essential(f"Google Drive authentication failed: {e}")
+            return False
+
+    def find_or_create_folder(self, folder_name="HedgeFund_Data"):
+        """Find or create the data folder in Google Drive"""
+        try:
+            # Search for existing folder
+            results = self.service.files().list(
+                q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'",
+                spaces='drive'
+            ).execute()
+
+            folders = results.get('files', [])
+
+            if folders:
+                self.folder_id = folders[0]['id']
+                log_essential(f"Found existing folder: {folder_name} (ID: {self.folder_id})")
+            else:
+                # Create new folder
+                folder_metadata = {
+                    'name': folder_name,
+                    'mimeType': 'application/vnd.google-apps.folder'
+                }
+                folder = self.service.files().create(body=folder_metadata).execute()
+                self.folder_id = folder.get('id')
+                log_essential(f"Created new folder: {folder_name} (ID: {self.folder_id})")
+
+            return True
+        except Exception as e:
+            log_essential(f"Error with folder operations: {e}")
+            return False
+
+    def upload_csv(self, df, filename):
+        """Upload DataFrame as CSV to Google Drive"""
+        try:
+            if not self.service or not self.folder_id:
+                return False
+
+            # Convert DataFrame to CSV
+            csv_buffer = StringIO()
+            df.to_csv(csv_buffer, index=False)
+            csv_data = csv_buffer.getvalue()
+
+            # Check if file exists
+            existing_files = self.service.files().list(
+                q=f"name='{filename}' and parents in '{self.folder_id}'",
+                spaces='drive'
+            ).execute()
+
+            files = existing_files.get('files', [])
+
+            media = MediaIoBaseUpload(
+                BytesIO(csv_data.encode('utf-8')),
+                mimetype='text/csv'
+            )
+
+            if files:
+                # Update existing file
+                file_id = files[0]['id']
+                self.service.files().update(
+                    fileId=file_id,
+                    media_body=media
+                ).execute()
+                log_essential(f"Updated file in Google Drive: {filename}")
+            else:
+                # Create new file
+                file_metadata = {
+                    'name': filename,
+                    'parents': [self.folder_id]
+                }
+                self.service.files().create(
+                    body=file_metadata,
+                    media_body=media
+                ).execute()
+                log_essential(f"Created new file in Google Drive: {filename}")
+
+            return True
+        except Exception as e:
+            log_essential(f"Error uploading CSV to Google Drive: {e}")
+            return False
+
+    def download_csv(self, filename):
+        """Download CSV from Google Drive as DataFrame"""
+        try:
+            if not self.service or not self.folder_id:
+                return None
+
+            # Find the file
+            results = self.service.files().list(
+                q=f"name='{filename}' and parents in '{self.folder_id}'",
+                spaces='drive'
+            ).execute()
+
+            files = results.get('files', [])
+
+            if not files:
+                log_essential(f"File not found in Google Drive: {filename}")
+                return None
+
+            file_id = files[0]['id']
+
+            # Download the file
+            request = self.service.files().get_media(fileId=file_id)
+            file_buffer = BytesIO()
+            downloader = MediaIoBaseDownload(file_buffer, request)
+
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+
+            # Read CSV data
+            file_buffer.seek(0)
+            df = pd.read_csv(file_buffer)
+            log_essential(f"Downloaded file from Google Drive: {filename} ({len(df)} rows)")
+            return df
+
+        except Exception as e:
+            log_essential(f"Error downloading CSV from Google Drive: {e}")
+            return None
+
+    def list_files(self):
+        """List all files in the data folder"""
+        try:
+            if not self.service or not self.folder_id:
+                return []
+
+            results = self.service.files().list(
+                q=f"parents in '{self.folder_id}'",
+                spaces='drive',
+                fields='files(id, name, modifiedTime, size)'
+            ).execute()
+
+            return results.get('files', [])
+        except Exception as e:
+            log_essential(f"Error listing files: {e}")
+            return []
+
+# Initialize Google Drive Manager
+@st.cache_resource
+def get_drive_manager():
+    return GoogleDriveManager()
+
+drive_manager = get_drive_manager()
 
 # --- Helper function to safely get string values ---
 def safe_get(data, key, default='Unknown'):
@@ -60,7 +281,7 @@ def safe_get(data, key, default='Unknown'):
         value = data.get(key, default)
         return value if value is not None and str(value).strip() != '' else default
     except Exception as e:
-        console_log(f"Error in safe_get for key {key}: {e}", "WARNING")
+        logger.warning(f"Error in safe_get for key {key}: {e}")
         return default
 
 # --- BULLETPROOF Duplicate Detection Functions ---
@@ -171,7 +392,7 @@ def find_existing_person_strict(name, company):
         return None
         
     except Exception as e:
-        console_log(f"Error in duplicate check: {e}", "ERROR")
+        logger.error(f"Error in duplicate check: {e}")
         return None
 
 def check_for_duplicates_in_extraction(people_data):
@@ -189,7 +410,7 @@ def check_for_duplicates_in_extraction(people_data):
         if person_key:
             if person_key in seen_keys:
                 duplicates.append(person)
-                console_log(f"INTERNAL DUPLICATE: {safe_get(person, 'name')} at {person.get('current_company', person.get('company', ''))} appears multiple times in extraction", "WARNING")
+                logger.warning(f"INTERNAL DUPLICATE: {safe_get(person, 'name')} at {person.get('current_company', person.get('company', ''))} appears multiple times in extraction")
             else:
                 seen_keys.add(person_key)
                 unique_people.append(person)
@@ -244,6 +465,148 @@ def debug_person_keys():
             'id': person['id']
         })
     return keys
+
+# --- Data Persistence with Google Drive ---
+def dataframe_to_people_and_firms(df):
+    """Convert DataFrame back to people and firms lists"""
+    people = []
+    firms = []
+
+    for _, row in df.iterrows():
+        if row['Type'] == 'Person':
+            person = {
+                "id": str(uuid.uuid4()),
+                "name": safe_get(row, 'Name'),
+                "current_title": safe_get(row, 'Title'),
+                "current_company_name": safe_get(row, 'Company'),
+                "location": safe_get(row, 'Location'),
+                "email": safe_get(row, 'Email') if pd.notna(row.get('Email')) else "",
+                "phone": "",
+                "education": "",
+                "expertise": safe_get(row, 'Expertise'),
+                "aum_managed": safe_get(row, 'AUM'),
+                "strategy": "",
+                "created_date": datetime.now().isoformat(),
+                "last_updated": datetime.now().isoformat(),
+                "context_mentions": [],
+                "is_asia_based": row.get('Asia_Based', 'No') == 'Yes' or row.get('Region') == 'Asia'
+            }
+            people.append(person)
+
+        elif row['Type'] == 'Firm':
+            firm = {
+                "id": str(uuid.uuid4()),
+                "name": safe_get(row, 'Name'),
+                "firm_type": safe_get(row, 'Expertise'),
+                "location": safe_get(row, 'Location'),
+                "headquarters": safe_get(row, 'Location'),
+                "aum": safe_get(row, 'AUM'),
+                "founded": None,
+                "strategy": safe_get(row, 'Title'),
+                "website": safe_get(row, 'Email') if pd.notna(row.get('Email')) else "",
+                "description": "",
+                "performance_metrics": [],
+                "created_date": datetime.now().isoformat(),
+                "last_updated": datetime.now().isoformat(),
+                "context_mentions": [],
+                "is_asia_based": row.get('Asia_Based', 'No') == 'Yes' or row.get('Region') == 'Asia'
+            }
+            firms.append(firm)
+
+    return people, firms
+
+def people_and_firms_to_dataframe(people, firms):
+    """Convert people and firms lists to DataFrame for CSV storage"""
+    all_data = []
+
+    # Export people
+    for person in people:
+        all_data.append({
+            'Type': 'Person',
+            'Name': safe_get(person, 'name'),
+            'Title': safe_get(person, 'current_title'),
+            'Company': safe_get(person, 'current_company_name'),
+            'Location': safe_get(person, 'location'),
+            'Email': safe_get(person, 'email'),
+            'Expertise': safe_get(person, 'expertise'),
+            'AUM': safe_get(person, 'aum_managed'),
+            'Asia_Based': 'Yes' if person.get('is_asia_based', False) else 'No'
+        })
+
+    # Export firms
+    for firm in firms:
+        all_data.append({
+            'Type': 'Firm',
+            'Name': safe_get(firm, 'name'),
+            'Title': safe_get(firm, 'strategy'),
+            'Company': safe_get(firm, 'name'),
+            'Location': safe_get(firm, 'location'),
+            'Email': safe_get(firm, 'website'),
+            'Expertise': safe_get(firm, 'firm_type'),
+            'AUM': safe_get(firm, 'aum'),
+            'Asia_Based': 'Yes' if firm.get('is_asia_based', False) else 'No'
+        })
+
+    return pd.DataFrame(all_data)
+
+def save_data_to_drive():
+    """Save all data to Google Drive as CSV"""
+    try:
+        if not drive_manager.service:
+            return False
+
+        # Convert data to DataFrame
+        df = people_and_firms_to_dataframe(st.session_state.people, st.session_state.firms)
+
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"hedge_fund_data_{timestamp}.csv"
+
+        # Upload to Google Drive
+        success = drive_manager.upload_csv(df, filename)
+
+        if success:
+            # Also save as "latest" version
+            drive_manager.upload_csv(df, "hedge_fund_data_latest.csv")
+            log_essential(f"Data saved to Google Drive: {filename}")
+            return True
+
+        return False
+
+    except Exception as e:
+        logger.error(f"Error saving data to Google Drive: {e}")
+        return False
+
+def load_data_from_drive():
+    """Load data from Google Drive CSV"""
+    try:
+        if not drive_manager.service:
+            return [], [], []
+
+        # Try to load the latest version first
+        df = drive_manager.download_csv("hedge_fund_data_latest.csv")
+
+        if df is None:
+            # If no latest version, try to find the most recent timestamped version
+            files = drive_manager.list_files()
+            hedge_fund_files = [f for f in files if f['name'].startswith('hedge_fund_data_') and f['name'].endswith('.csv')]
+
+            if hedge_fund_files:
+                # Sort by modification time and get the latest
+                hedge_fund_files.sort(key=lambda x: x['modifiedTime'], reverse=True)
+                latest_file = hedge_fund_files[0]['name']
+                df = drive_manager.download_csv(latest_file)
+
+        if df is not None and not df.empty:
+            people, firms = dataframe_to_people_and_firms(df)
+            log_essential(f"Data loaded from Google Drive: {len(people)} people, {len(firms)} firms")
+            return people, firms, []  # No employments from CSV for now
+
+        return [], [], []
+
+    except Exception as e:
+        logger.error(f"Error loading data from Google Drive: {e}")
+        return [], [], []
 
 # --- Asia Detection and Tagging Functions ---
 def is_asia_based(location_text):
@@ -434,7 +797,7 @@ def repair_json_response(json_text):
         return json_text
         
     except Exception as e:
-        console_log(f"JSON repair failed: {e}", "WARNING")
+        logger.warning(f"JSON repair failed: {e}")
         return json_text
 
 # --- Date overlap calculation ---
@@ -459,7 +822,7 @@ def calculate_date_overlap(start1, end1, start2, end2):
             return None
             
     except Exception as e:
-        console_log(f"Error calculating date overlap: {e}", "WARNING")
+        logger.warning(f"Error calculating date overlap: {e}")
         return None
 
 # --- File Loading ---
@@ -469,7 +832,7 @@ def load_file_content_enhanced(uploaded_file):
         file_size = len(uploaded_file.getvalue())
         file_size_mb = file_size / (1024 * 1024)
         
-        console_log(f"Loading file: {uploaded_file.name} ({file_size_mb:.1f} MB)")
+        logger.info(f"Loading file: {uploaded_file.name} ({file_size_mb:.1f} MB)")
         
         if uploaded_file.type == "text/plain" or uploaded_file.name.endswith('.txt'):
             raw_data = uploaded_file.getvalue()
@@ -484,7 +847,7 @@ def load_file_content_enhanced(uploaded_file):
                 try:
                     content = raw_data.decode(encoding)
                     encoding_used = encoding
-                    console_log(f"Successfully decoded file with {encoding}")
+                    logger.info(f"Successfully decoded file with {encoding}")
                     break
                 except UnicodeDecodeError:
                     continue
@@ -543,7 +906,7 @@ def enhanced_global_search(query):
                 if query_lower in searchable_text:
                     matching_people.append(person)
             except Exception as e:
-                console_log(f"Error searching person: {e}", "WARNING")
+                logger.warning(f"Error searching person: {e}")
                 continue
         
         # Search firms
@@ -562,13 +925,13 @@ def enhanced_global_search(query):
                 if query_lower in searchable_text:
                     matching_firms.append(firm)
             except Exception as e:
-                console_log(f"Error searching firm: {e}", "WARNING")
+                logger.warning(f"Error searching firm: {e}")
                 continue
         
         return matching_people, matching_firms, matching_metrics
     
     except Exception as e:
-        console_log(f"Error in enhanced_global_search: {e}", "ERROR")
+        logger.error(f"Error in enhanced_global_search: {e}")
         return [], [], []
 
 # --- Database Persistence Setup ---
@@ -596,7 +959,7 @@ def save_data():
         return True
         
     except Exception as e:
-        console_log(f"Save error: {e}", "ERROR")
+        logger.error(f"Save error: {e}")
         return False
 
 def load_data():
@@ -627,7 +990,7 @@ def load_data():
         return people, firms, employments
         
     except Exception as e:
-        console_log(f"Error loading data: {e}", "ERROR")
+        logger.error(f"Error loading data: {e}")
         return [], [], []
 
 # --- Initialize Session State with Sample Data ---
@@ -807,495 +1170,212 @@ def initialize_session_state():
             'progress': 0
         }
 
-# --- Gemini API Setup with Flash 1.5 Optimized Limits ---
+# --- Gemini API Setup with Paid Tier Limits ---
 @st.cache_resource
 def setup_gemini(api_key):
-    """Setup Gemini Flash 1.5 with optimized settings for high-volume extraction"""
+    """Setup Gemini with optimized settings for paid tier"""
     if not GENAI_AVAILABLE:
         return None
     try:
         genai.configure(api_key=api_key)
-        # Gemini Flash 1.5 limits: 4M tokens/minute, 2000 requests/minute
+        # Use Flash model for optimal speed/cost ratio on paid tier
         model = genai.GenerativeModel("gemini-1.5-flash")
         model.model_id = "gemini-1.5-flash"
-        console_log(f"Gemini Flash 1.5 initialized - Limits: 4M tokens/min, 2000 RPM")
         return model
     except Exception as e:
-        console_log(f"Gemini setup failed: {e}", "ERROR")
+        logger.error(f"Gemini setup failed: {e}")
         return None
 
-def preprocess_content(text):
-    """Remove marketing content, disclaimers, and noise to focus on core information"""
+def extract_data_from_text(text, model):
+    """Extract people and performance data from text using Gemini"""
     try:
-        console_log("Starting content preprocessing...")
+        log_extraction_progress("GEMINI_REQUEST", f"Sending to {model.model_id}")
         
-        original_length = len(text)
-        
-        # Remove email headers and metadata
-        lines = text.split('\n')
-        cleaned_lines = []
-        skip_mode = False
-        
-        for line in lines:
-            line_lower = line.lower().strip()
-            
-            # Skip email headers
-            if any(header in line_lower for header in [
-                'from:', 'to:', 'subject:', 'sent:', 'cc:', 'bcc:',
-                'reply-to:', 'return-path:', 'message-id:'
-            ]):
-                continue
-            
-            # Skip marketing/disclaimer sections
-            if any(marker in line_lower for marker in [
-                'unsubscribe', 'privacy policy', 'cookies policy',
-                'disclaimer', 'terms and conditions', 'legal notice',
-                'this message is confidential', 'important reminder:',
-                'although this transmission', 'copyright', '© 20',
-                'all rights reserved', 'member fdic', 'deposits held',
-                'jpmorgan chase will never send', 'virus free',
-                'unauthorized use is strictly prohibited'
-            ]):
-                skip_mode = True
-                continue
-            
-            # Skip URL lines and tracking pixels
-            if any(url_marker in line_lower for url_marker in [
-                'https://', 'http://', 'urldefense.proofpoint.com',
-                'email.streetcontxt.net', 'jpmorgan.email',
-                'track_click', 'unsubscribe_request'
-            ]):
-                continue
-            
-            # Skip repetitive separators
-            if line.strip() in ['', '___', '---', '===', '|||']:
-                if not cleaned_lines or cleaned_lines[-1].strip() != '':
-                    cleaned_lines.append('')
-                continue
-            
-            # Reset skip mode on substantial content
-            if len(line.strip()) > 20 and any(keyword in line_lower for keyword in [
-                'hedge fund', 'capital', 'investment', 'management', 
-                'portfolio', 'returns', 'aum', 'performance', 'fund',
-                'cio', 'ceo', 'portfolio manager', 'analyst'
-            ]):
-                skip_mode = False
-            
-            if not skip_mode:
-                cleaned_lines.append(line)
-        
-        # Join and clean up extra whitespace
-        cleaned_text = '\n'.join(cleaned_lines)
-        
-        # Remove excessive whitespace
-        import re
-        cleaned_text = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned_text)  # Max 2 newlines
-        cleaned_text = re.sub(r'[ \t]+', ' ', cleaned_text)  # Multiple spaces to single
-        cleaned_text = cleaned_text.strip()
-        
-        # Remove remaining boilerplate patterns
-        patterns_to_remove = [
-            r'SEE ALL ARTICLES.*?EDGE.*?\n',
-            r'This section contains materials.*?information\.\n',
-            r'J\.P\. Morgan.*?United States\.\n',
-            r'Source: [^\n]*\n',  # Remove source lines
-            r'_{10,}.*?\n',  # Long underscores
-        ]
-        
-        for pattern in patterns_to_remove:
-            cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
-        
-        final_length = len(cleaned_text)
-        reduction = ((original_length - final_length) / original_length) * 100
-        
-        console_log(f"Preprocessing complete:")
-        console_log(f"  Original: {original_length:,} chars")
-        console_log(f"  Cleaned: {final_length:,} chars") 
-        console_log(f"  Reduction: {reduction:.1f}% (saved {original_length - final_length:,} chars)")
-        
-        return cleaned_text
-        
-    except Exception as e:
-        console_log(f"Preprocessing failed: {e}, using original text", "WARNING")
-        return text
+        # Paid tier optimized prompt
+        prompt = f"""
+Extract financial professionals and performance data from this text.
 
-# Context caching for Gemini
-EXTRACTION_CONTEXT_CACHE = None
+TEXT: {text}
 
-def get_extraction_prompt_with_caching():
-    """Create cached context for repeated extractions"""
-    global EXTRACTION_CONTEXT_CACHE
-    
-    if EXTRACTION_CONTEXT_CACHE is None:
-        # Create the system context that will be cached
-        system_context = """You are an expert at extracting hedge fund and financial professional information from news articles and reports.
-
-Your task is to extract ALL people and performance data comprehensively. Be thorough and capture everyone mentioned.
-
-EXTRACTION RULES:
-1. Extract EVERY person mentioned, even briefly
-2. Include partial information if full details aren't available  
-3. For performance data, extract ANY numerical metrics (returns, AUM, etc.)
-4. Include the exact text snippet where you found each piece of information
-5. Focus on hedge funds, asset managers, investment firms, and financial professionals
-
-EXAMPLES OF WHAT TO EXTRACT:
-
-PEOPLE EXAMPLES:
-- "John Smith joins Goldman Sachs as Managing Director" → extract John Smith, Goldman Sachs, Managing Director
-- "Sarah Johnson leaves Citadel for new role at Millennium" → extract both movements
-- "Philippe Laffont, founder of Coatue Management" → extract Philippe Laffont, Coatue Management, founder
-- "Ex-Marshall Wace PM plots debut" → extract person even with minimal info
-
-PERFORMANCE EXAMPLES:
-- "Fund returned 12% this year" → extract 12%, return, YTD
-- "AUM reached $2.5 billion" → extract $2.5 billion, AUM
-- "Engineers Gate is up 12% YTD" → extract Engineers Gate, 12%, YTD
-- "Ohio Teachers' portfolio returned 6.6% in Q1" → extract performance data
-
-MOVEMENT TYPES: hire, promotion, departure, appointment, launch, founding, acquisition
-
-OUTPUT FORMAT: Return ONLY valid JSON with this exact structure:
-{
+Return ONLY valid JSON with this structure:
+{{
   "people": [
-    {
+    {{
       "name": "Full Name",
-      "current_company": "Company Name", 
+      "current_company": "Company Name",
       "current_title": "Job Title",
-      "location": "City, Country (if mentioned)",
-      "expertise": "Area of expertise or strategy",
-      "movement_type": "hire|promotion|departure|appointment|launch|founding",
-      "email": "email@company.com (if found)",
-      "phone": "phone number (if found)", 
-      "linkedin": "LinkedIn profile URL (if found)",
-      "source_snippet": "The exact sentence or paragraph from which this person's info was extracted"
-    }
+      "location": "City, Country",
+      "expertise": "Area of expertise",
+      "movement_type": "hire|promotion|departure|appointment"
+    }}
   ],
   "performance": [
-    {
+    {{
       "fund_name": "Fund/Firm Name",
-      "metric_type": "return|aum|assets|performance|benchmark",
-      "value": "numeric_value_with_unit", 
-      "period": "YTD|Q1|Q2|Q3|Q4|1Y|3Y|5Y|specific_timeframe",
-      "date": "YYYY or YYYY-MM",
-      "source_snippet": "The exact sentence or paragraph from which this metric was extracted"
-    }
+      "metric_type": "return|sharpe|aum|alpha|beta",
+      "value": "numeric_value_only",
+      "period": "YTD|Q1|Q2|Q3|Q4|1Y|3Y|5Y",
+      "date": "YYYY"
+    }}
   ]
-}
-
-Extract everything you can find, even if incomplete. Be thorough and comprehensive!"""
-
-        EXTRACTION_CONTEXT_CACHE = system_context
-        console_log("Created cached extraction context")
-    
-    return EXTRACTION_CONTEXT_CACHE
-
-def extract_data_from_text(text, model):
-    """Extract people and performance data from text using Gemini with preprocessing and caching"""
-    try:
-        console_log(f"Sending to {model.model_id}")
+}}
+"""
         
-        # Get cached context to avoid repeating instructions
-        cached_context = get_extraction_prompt_with_caching()
-        
-        # Create the actual prompt with just the text
-        prompt = f"""{cached_context}
-
-Now extract from this specific content:
-
-TEXT TO ANALYZE:
-{text}
-
-Return the JSON response:"""
-        
-        # Optimized generation config
+        # Optimized generation config for paid tier
         generation_config = {
-            'temperature': 0.1,  # Lower for consistent extraction
-            'top_p': 0.9,
-            'max_output_tokens': 8192,
+            'temperature': 0.1,
+            'top_p': 0.8,
+            'max_output_tokens': 4096,
         }
-        
-        original_prompt_length = len(prompt)
-        console_log(f"Prompt length: {original_prompt_length:,} characters (with cached context)")
         
         response = model.generate_content(prompt, generation_config=generation_config)
         
         if not response or not response.text:
-            console_log("No response from Gemini model", "ERROR")
             return [], []
         
         response_text = response.text.strip()
-        console_log(f"Response length: {len(response_text):,} characters")
         
-        # Extract JSON with better error handling
+        # Extract JSON
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
         
         if json_start == -1 or json_end <= json_start:
-            console_log("No valid JSON found in response", "ERROR")
-            console_log(f"First 500 chars of response: {response_text[:500]}")
             return [], []
         
         json_text = response_text[json_start:json_end]
-        console_log(f"Extracted JSON length: {len(json_text):,} characters")
         
         # Try parsing, with repair if needed
         try:
             result = json.loads(json_text)
-            console_log("JSON parsed successfully")
-        except json.JSONDecodeError as e:
-            console_log(f"JSON parse error: {e}, attempting repair", "WARNING")
+        except json.JSONDecodeError:
             repaired_json = repair_json_response(json_text)
             try:
                 result = json.loads(repaired_json)
-                console_log("JSON repaired and parsed successfully")
-            except json.JSONDecodeError as e2:
-                console_log(f"JSON repair failed: {e2}", "ERROR")
-                console_log(f"Failed JSON snippet: {json_text[:1000]}")
+            except json.JSONDecodeError:
                 return [], []
         
         people = result.get('people', [])
         performance = result.get('performance', [])
         
-        console_log(f"Raw extraction: {len(people)} people, {len(performance)} performance metrics")
-        
-        # More lenient validation
+        # Validate extracted data
         valid_people = []
-        for i, p in enumerate(people):
+        for p in people:
             name = safe_get(p, 'name', '').strip()
             company = safe_get(p, 'current_company', '').strip()
             
-            console_log(f"Person {i+1}: '{name}' at '{company}'")
-            
-            # More lenient validation - just need a name
-            if (name and len(name) > 1 and
-                name.lower() not in ['name', 'full name', 'unknown', 'n/a', 'not specified']):
+            if (name and company and 
+                len(name) > 2 and len(company) > 2 and
+                name.lower() not in ['name', 'full name', 'unknown'] and
+                company.lower() not in ['company', 'company name', 'unknown']):
                 valid_people.append(p)
-                console_log(f"✅ Valid person: {name}")
-            else:
-                console_log(f"❌ Invalid person: {name} (too short or generic)")
         
         valid_performance = []
-        for i, perf in enumerate(performance):
+        for perf in performance:
             fund_name = safe_get(perf, 'fund_name', '').strip()
             metric_type = safe_get(perf, 'metric_type', '').strip()
             value = safe_get(perf, 'value', '').strip()
             
-            console_log(f"Performance {i+1}: '{fund_name}' - '{metric_type}': '{value}'")
-            
-            # More lenient validation
             if (fund_name and metric_type and value and
-                len(fund_name) > 1 and len(value) > 0 and
-                fund_name.lower() not in ['fund name', 'unknown', 'n/a']):
+                len(fund_name) > 2 and
+                fund_name.lower() not in ['fund name', 'unknown'] and
+                metric_type.lower() not in ['metric type', 'unknown']):
                 valid_performance.append(perf)
-                console_log(f"✅ Valid performance: {fund_name} - {value}")
-            else:
-                console_log(f"❌ Invalid performance: missing required fields")
         
-        console_log(f"Final result: {len(valid_people)} people, {len(valid_performance)} metrics")
+        log_extraction_progress("EXTRACTION_COMPLETE", f"Found {len(valid_people)} people, {len(valid_performance)} metrics")
         return valid_people, valid_performance
         
     except Exception as e:
-        console_log(f"Extraction failed: {e}", "ERROR")
-        import traceback
-        console_log(f"Full traceback: {traceback.format_exc()}", "ERROR")
+        logger.error(f"Extraction failed: {e}")
         return [], []
 
-def process_extraction_with_rate_limiting(text, model, enable_preprocessing=True):
-    """Process extraction with preprocessing, optimized rate limiting for large files (5-10MB+)"""
+def process_extraction_with_rate_limiting(text, model):
+    """Process extraction with automatic rate limiting for paid tier"""
     start_time = time.time()
     
     try:
-        # STEP 1: Preprocessing to remove noise (optional)
-        if enable_preprocessing:
-            console_log("=== STARTING PREPROCESSING ===")
-            cleaned_text = preprocess_content(text)
-        else:
-            console_log("=== SKIPPING PREPROCESSING ===")
-            cleaned_text = text
+        text_length = len(text)
+        log_extraction_step("PROCESS_START", f"Starting extraction process with {text_length} chars")
         
-        text_length = len(cleaned_text)
-        text_mb = text_length / (1024 * 1024)
-        console_log(f"=== STARTING EXTRACTION ===")
-        console_log(f"Processing {text_length:,} chars ({text_mb:.1f} MB) after preprocessing")
-        
-        # Advanced chunking strategy for large files:
-        if text_mb <= 1:
-            max_chunk_size = 500000  # 500K for small files
-        elif text_mb <= 5:
-            max_chunk_size = 1000000  # 1M for medium files (1-5MB)
-        else:
-            max_chunk_size = 2000000  # 2M for large files (5MB+)
-        
-        console_log(f"Using {max_chunk_size:,} char chunks for {text_mb:.1f}MB file")
-        
+        # Split into chunks if text is too long (paid tier can handle larger chunks)
+        max_chunk_size = 100000  # 100K chars for paid tier
         chunks = []
         
-        if len(cleaned_text) <= max_chunk_size:
-            chunks = [cleaned_text]
-            console_log(f"Single chunk: {len(cleaned_text):,} chars")
+        if len(text) <= max_chunk_size:
+            chunks = [text]
+            log_extraction_step("CHUNKING", f"Single chunk: {len(text)} chars")
         else:
             current_pos = 0
             chunk_count = 0
-            while current_pos < len(cleaned_text):
-                end_pos = min(current_pos + max_chunk_size, len(cleaned_text))
+            while current_pos < len(text):
+                end_pos = min(current_pos + max_chunk_size, len(text))
                 
-                # Smart boundary detection for large chunks
-                if end_pos < len(cleaned_text):
-                    # Look for natural breaks in order of preference
-                    search_start = max(current_pos, end_pos - int(max_chunk_size * 0.05))  # Last 5%
-                    
-                    # Try paragraph breaks first
-                    break_pos = cleaned_text.rfind('\n\n', search_start, end_pos)
-                    if break_pos <= current_pos:
-                        # Try sentence breaks
-                        break_pos = cleaned_text.rfind('. ', search_start, end_pos)
-                        if break_pos > current_pos:
-                            break_pos += 2
-                    else:
-                        break_pos += 2
-                    
+                # Find paragraph break for better chunking
+                if end_pos < len(text):
+                    break_pos = text.rfind('\n\n', current_pos, end_pos)
                     if break_pos > current_pos:
-                        end_pos = break_pos
+                        end_pos = break_pos + 2
                 
-                chunk = cleaned_text[current_pos:end_pos].strip()
-                if len(chunk) > 2000:  # Minimum chunk size for large files
+                chunk = text[current_pos:end_pos].strip()
+                if len(chunk) > 500:  # Minimum chunk size
                     chunks.append(chunk)
                     chunk_count += 1
-                    console_log(f"Chunk {chunk_count}: {len(chunk):,} chars (pos: {current_pos:,}-{end_pos:,})")
+                    log_extraction_step("CHUNK_CREATED", f"Chunk {chunk_count}: {len(chunk)} chars (pos: {current_pos}-{end_pos})")
                 current_pos = end_pos
             
-            console_log(f"Created {len(chunks)} chunks from {text_mb:.1f}MB file")
-        
-        # Estimate processing time based on file size
-        estimated_tokens = text_length // 4
-        estimated_time_tokens = estimated_tokens / 66000  # 66K tokens/second
-        estimated_time_requests = len(chunks) * 0.5  # ~0.5s per request
-        estimated_time = max(estimated_time_tokens, estimated_time_requests)
-        
-        console_log(f"Processing estimates:")
-        console_log(f"  Tokens: ~{estimated_tokens:,} (~{estimated_time_tokens:.1f}s)")
-        console_log(f"  Requests: {len(chunks)} chunks (~{estimated_time_requests:.1f}s)")
-        console_log(f"  Total estimated time: ~{estimated_time:.1f}s")
+            log_extraction_step("CHUNKING_COMPLETE", f"Created {len(chunks)} chunks from {text_length} chars")
         
         all_people = []
         all_performance = []
         failed_chunks = []
-        total_tokens_used = 0
         
-        # Dynamic rate limiting based on file size
-        if text_mb <= 1:
-            base_delay = 0.03  # 30ms for small files
-        elif text_mb <= 5:
-            base_delay = 0.05  # 50ms for medium files  
-        else:
-            base_delay = 0.1   # 100ms for large files (more conservative)
-        
-        tokens_per_second_limit = 60000  # Conservative limit (90% of 66.6K)
-        
-        console_log(f"Rate limiting config:")
-        console_log(f"  Base delay: {base_delay:.3f}s")
-        console_log(f"  Token limit: {tokens_per_second_limit:,}/second")
-        console_log(f"  File size category: {'Small' if text_mb <= 1 else 'Medium' if text_mb <= 5 else 'Large'}")
+        # Process chunks with paid tier rate limiting (2000 RPM = ~33 per second)
+        delay_between_requests = 0.03  # 30ms delay for paid tier
+        log_extraction_step("RATE_LIMITING", f"Using {delay_between_requests}s delay between requests (2000 RPM)")
         
         for i, chunk in enumerate(chunks):
             chunk_start_time = time.time()
             
             try:
-                # Update progress with detailed status
-                progress = int((i / len(chunks)) * 100)
-                elapsed = time.time() - start_time
-                if i > 0:
-                    avg_time_per_chunk = elapsed / i
-                    remaining_chunks = len(chunks) - i
-                    eta = remaining_chunks * avg_time_per_chunk
-                    status_msg = f'Chunk {i+1}/{len(chunks)} • {progress}% • ETA: {eta:.0f}s'
-                else:
-                    status_msg = f'Processing chunk {i+1}/{len(chunks)} ({len(chunk):,} chars)...'
-                
                 st.session_state.background_processing.update({
-                    'progress': progress,
-                    'status_message': status_msg
+                    'progress': int((i / len(chunks)) * 100),
+                    'status_message': f'Processing chunk {i+1}/{len(chunks)}...'
                 })
                 
-                console_log(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk):,} chars)")
+                log_extraction_step("CHUNK_PROCESS_START", f"Processing chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
                 
-                # Estimate token usage
-                estimated_tokens = len(chunk) // 4
-                total_tokens_used += estimated_tokens
-                
-                # Process chunk
                 people, performance = extract_data_from_text(chunk, model)
                 
                 chunk_duration = time.time() - chunk_start_time
-                console_log(f"  Result: {len(people)} people, {len(performance)} metrics")
-                console_log(f"  Time: {chunk_duration:.2f}s, Tokens: ~{estimated_tokens:,}")
+                log_extraction_step("CHUNK_PROCESS_COMPLETE", 
+                    f"Chunk {i+1}/{len(chunks)} complete: {len(people)} people, {len(performance)} metrics (duration: {chunk_duration:.2f}s)")
                 
                 all_people.extend(people)
                 all_performance.extend(performance)
                 
-                # Advanced rate limiting for large files
+                # Rate limiting delay (except for last chunk)
                 if i < len(chunks) - 1:
-                    elapsed_time = time.time() - start_time
-                    current_tokens_per_second = total_tokens_used / max(elapsed_time, 0.1)
-                    
-                    # Dynamic delay calculation
-                    if current_tokens_per_second > tokens_per_second_limit * 0.9:
-                        # Approaching limit - increase delay significantly
-                        dynamic_delay = base_delay * 2.0
-                        console_log(f"  High token rate ({current_tokens_per_second:.0f}/s) - extending delay to {dynamic_delay:.3f}s")
-                    elif current_tokens_per_second > tokens_per_second_limit * 0.7:
-                        # Getting close - moderate increase
-                        dynamic_delay = base_delay * 1.5
-                        console_log(f"  Elevated token rate ({current_tokens_per_second:.0f}/s) - delay {dynamic_delay:.3f}s")
-                    else:
-                        # Normal rate
-                        dynamic_delay = base_delay
-                    
-                    time.sleep(dynamic_delay)
+                    log_extraction_step("RATE_LIMIT_DELAY", f"Applying {delay_between_requests}s rate limit delay")
+                    time.sleep(delay_between_requests)
                     
             except Exception as e:
                 chunk_duration = time.time() - chunk_start_time
                 failed_chunks.append(i+1)
-                console_log(f"  FAILED: {e} (duration: {chunk_duration:.2f}s)", "ERROR")
+                log_extraction_step("CHUNK_PROCESS_ERROR", 
+                    f"Chunk {i+1}/{len(chunks)} failed: {e} (duration: {chunk_duration:.2f}s)", "ERROR")
                 continue
         
-        # Final statistics
         total_duration = time.time() - start_time
-        avg_tokens_per_second = total_tokens_used / max(total_duration, 0.1)
-        success_rate = ((len(chunks) - len(failed_chunks)) / len(chunks)) * 100
-        
-        original_length = len(text)
-        preprocessing_reduction = ((original_length - text_length) / original_length) * 100
-        
-        console_log(f"")
-        console_log(f"🎯 EXTRACTION COMPLETE:")
-        console_log(f"  📊 Results: {len(all_people)} people, {len(all_performance)} metrics")
-        console_log(f"  📁 Original: {original_length/1024/1024:.1f}MB → Cleaned: {text_mb:.1f}MB ({preprocessing_reduction:.1f}% reduction)")
-        console_log(f"  🧩 Chunks: {len(chunks)} total, {len(chunks)-len(failed_chunks)} success, {len(failed_chunks)} failed")
-        console_log(f"  ⏱️  Duration: {total_duration:.1f}s (estimated: {estimated_time:.1f}s)")
-        console_log(f"  🎛️  Performance: {success_rate:.1f}% success rate")
-        console_log(f"  🔧 Token usage: {total_tokens_used:,} tokens (~{avg_tokens_per_second:.0f}/sec)")
-        console_log(f"  ⚡ Efficiency: {len(chunks)/total_duration:.1f} chunks/sec")
-        console_log(f"  🧹 Preprocessing saved: {(original_length - text_length):,} chars ({preprocessing_reduction:.1f}%)")
+        log_extraction_step("PROCESS_COMPLETE", 
+            f"Extraction process complete: {len(all_people)} people, {len(all_performance)} metrics from {len(chunks)} chunks, {len(failed_chunks)} failed (total duration: {total_duration:.2f}s)")
         
         if failed_chunks:
-            console_log(f"  ⚠️  Failed chunks: {failed_chunks}", "WARNING")
-        
-        # Performance warnings
-        if avg_tokens_per_second > tokens_per_second_limit:
-            console_log(f"  🚨 WARNING: Exceeded token rate limit ({avg_tokens_per_second:.0f} > {tokens_per_second_limit})", "WARNING")
-        
-        if total_duration > estimated_time * 1.5:
-            console_log(f"  ⚠️  Processing took longer than expected (actual: {total_duration:.1f}s vs est: {estimated_time:.1f}s)", "WARNING")
+            log_extraction_step("FAILED_CHUNKS", f"Failed chunks: {failed_chunks}", "WARNING")
         
         return all_people, all_performance
         
     except Exception as e:
         total_duration = time.time() - start_time
-        console_log(f"🚨 PROCESSING FAILED: {e} (duration: {total_duration:.2f}s)", "ERROR")
-        import traceback
-        console_log(f"Full traceback: {traceback.format_exc()}", "ERROR")
+        log_extraction_step("PROCESS_ERROR", f"Processing failed: {e} (duration: {total_duration:.2f}s)", "ERROR")
         return [], []
 
 # --- Helper Functions ---
@@ -1429,31 +1509,31 @@ def add_employment_with_dates(person_id, company_name, title, start_date, end_da
         return True
         
     except Exception as e:
-        console_log(f"Error adding employment: {e}", "ERROR")
+        logger.error(f"Error adding employment: {e}")
         return False
 
 # --- Navigation Functions with Logging ---
 def go_to_firms():
-    console_log("Switched to Firms view")
+    log_user_action("NAVIGATION", "Switched to Firms view")
     st.session_state.current_view = 'firms'
     st.session_state.selected_firm_id = None
 
 def go_to_people():
-    console_log("Switched to People view")
+    log_user_action("NAVIGATION", "Switched to People view")
     st.session_state.current_view = 'people'
     st.session_state.selected_person_id = None
 
 def go_to_person_details(person_id):
     person = get_person_by_id(person_id)
     person_name = safe_get(person, 'name', 'Unknown') if person else 'Unknown'
-    console_log(f"Viewing person details: {person_name} (ID: {person_id})")
+    log_user_action("NAVIGATION", f"Viewing person details: {person_name} (ID: {person_id})")
     st.session_state.selected_person_id = person_id
     st.session_state.current_view = 'person_details'
 
 def go_to_firm_details(firm_id):
     firm = get_firm_by_id(firm_id)
     firm_name = safe_get(firm, 'name', 'Unknown') if firm else 'Unknown'
-    console_log(f"Viewing firm details: {firm_name} (ID: {firm_id})")
+    log_user_action("NAVIGATION", f"Viewing firm details: {firm_name} (ID: {firm_id})")
     st.session_state.selected_firm_id = firm_id
     st.session_state.current_view = 'firm_details'
 
@@ -1465,7 +1545,7 @@ def export_to_csv():
     try:
         people_count = len(st.session_state.people)
         firms_count = len(st.session_state.firms)
-        console_log(f"Starting CSV export: {people_count} people, {firms_count} firms")
+        log_user_action("EXPORT_START", f"Starting CSV export: {people_count} people, {firms_count} firms")
         
         all_data = []
         
@@ -1478,8 +1558,6 @@ def export_to_csv():
                 'Company': safe_get(person, 'current_company_name'),
                 'Location': safe_get(person, 'location'),
                 'Email': safe_get(person, 'email'),
-                'Phone': safe_get(person, 'phone'),
-                'LinkedIn': safe_get(person, 'linkedin'),
                 'Expertise': safe_get(person, 'expertise'),
                 'AUM': safe_get(person, 'aum_managed'),
                 'Asia_Based': 'Yes' if person.get('is_asia_based', False) else 'No'
@@ -1494,8 +1572,6 @@ def export_to_csv():
                 'Company': safe_get(firm, 'name'),
                 'Location': safe_get(firm, 'location'),
                 'Email': safe_get(firm, 'website'),
-                'Phone': '',
-                'LinkedIn': '',
                 'Expertise': safe_get(firm, 'firm_type'),
                 'AUM': safe_get(firm, 'aum'),
                 'Asia_Based': 'Yes' if firm.get('is_asia_based', False) else 'No'
@@ -1506,13 +1582,13 @@ def export_to_csv():
         filename = f"hedge_fund_data_{timestamp}.csv"
         
         duration = time.time() - start_time
-        console_log(f"CSV export complete: {len(all_data)} records, file: {filename} (duration: {duration:.2f}s)")
+        log_user_action("EXPORT_SUCCESS", f"CSV export complete: {len(all_data)} records, file: {filename} (duration: {duration:.2f}s)")
         
         return df.to_csv(index=False), filename
     
     except Exception as e:
         duration = time.time() - start_time
-        console_log(f"CSV export failed: {e} (duration: {duration:.2f}s)", "ERROR")
+        log_user_action("EXPORT_ERROR", f"CSV export failed: {e} (duration: {duration:.2f}s)")
         return None, None
 
 def export_asia_csv():
@@ -1523,7 +1599,7 @@ def export_asia_csv():
         asia_people = get_asia_people()
         asia_firms = get_asia_firms()
         
-        console_log(f"Starting Asia CSV export: {len(asia_people)} people, {len(asia_firms)} firms")
+        log_user_action("ASIA_EXPORT_START", f"Starting Asia CSV export: {len(asia_people)} people, {len(asia_firms)} firms")
         
         asia_data = []
         
@@ -1536,8 +1612,6 @@ def export_asia_csv():
                 'Company': safe_get(person, 'current_company_name'),
                 'Location': safe_get(person, 'location'),
                 'Email': safe_get(person, 'email'),
-                'Phone': safe_get(person, 'phone'),
-                'LinkedIn': safe_get(person, 'linkedin'),
                 'Expertise': safe_get(person, 'expertise'),
                 'AUM': safe_get(person, 'aum_managed'),
                 'Region': 'Asia'
@@ -1552,15 +1626,13 @@ def export_asia_csv():
                 'Company': safe_get(firm, 'name'),
                 'Location': safe_get(firm, 'location'),
                 'Email': safe_get(firm, 'website'),
-                'Phone': '',
-                'LinkedIn': '',
                 'Expertise': safe_get(firm, 'firm_type'),
                 'AUM': safe_get(firm, 'aum'),
                 'Region': 'Asia'
             })
         
         if not asia_data:
-            console_log("No Asia-based data found for export")
+            log_user_action("ASIA_EXPORT_EMPTY", "No Asia-based data found for export")
             return None, None
         
         df = pd.DataFrame(asia_data)
@@ -1568,32 +1640,32 @@ def export_asia_csv():
         filename = f"asia_hedge_fund_data_{timestamp}.csv"
         
         duration = time.time() - start_time
-        console_log(f"Asia CSV export complete: {len(asia_data)} records, file: {filename} (duration: {duration:.2f}s)")
+        log_user_action("ASIA_EXPORT_SUCCESS", f"Asia CSV export complete: {len(asia_data)} records, file: {filename} (duration: {duration:.2f}s)")
         
         return df.to_csv(index=False), filename
     
     except Exception as e:
         duration = time.time() - start_time
-        console_log(f"Asia CSV export failed: {e} (duration: {duration:.2f}s)", "ERROR")
+        log_user_action("ASIA_EXPORT_ERROR", f"Asia CSV export failed: {e} (duration: {duration:.2f}s)")
         return None, None
 
 # Initialize session state
 try:
-    console_log("Initializing application")
+    log_user_action("APP_INIT_START", "Initializing application")
     initialize_session_state()
     
     # Tag all existing profiles for Asia classification
     if 'asia_tagged' not in st.session_state:
-        console_log("Starting Asia classification for existing profiles")
+        log_user_action("ASIA_TAGGING_START", "Starting Asia classification for existing profiles")
         asia_people_count, asia_firms_count = tag_all_existing_profiles()
         save_data()  # Save the Asia tags
         st.session_state.asia_tagged = True
-        console_log(f"Tagged {asia_people_count} Asia people and {asia_firms_count} Asia firms")
+        log_user_action("ASIA_TAGGING_COMPLETE", f"Tagged {asia_people_count} Asia people and {asia_firms_count} Asia firms")
         
-    console_log(f"Application initialized successfully with {len(st.session_state.people)} people, {len(st.session_state.firms)} firms")
+    log_user_action("APP_INIT_COMPLETE", f"Application initialized successfully with {len(st.session_state.people)} people, {len(st.session_state.firms)} firms")
         
 except Exception as init_error:
-    console_log(f"Initialization failed: {init_error}", "ERROR")
+    log_user_action("APP_INIT_ERROR", f"Initialization failed: {init_error}")
     st.error(f"Initialization error: {init_error}")
     st.stop()
 
@@ -1648,30 +1720,6 @@ with st.sidebar:
         st.markdown("---")
         st.subheader("Extract from Content")
         
-        # Show processing capabilities
-        st.caption("🚀 **Optimized for Gemini Flash 1.5**")
-        st.caption("• 4M tokens/minute • 2000 requests/minute")
-        st.caption("• Up to 2MB chunks • Handles 5-10MB+ files")
-        st.caption("• Smart preprocessing • Context caching • Real-time progress")
-        
-        # Preprocessing options
-        with st.expander("⚙️ Advanced Processing Options"):
-            enable_preprocessing = st.checkbox("🧹 Enable Content Preprocessing", 
-                value=True, 
-                help="Remove marketing content, disclaimers, and email headers to focus on core information",
-                key="enable_preprocessing")
-            
-            if enable_preprocessing:
-                st.info("**Preprocessing will remove:**")
-                st.caption("• Email headers (From, To, Subject, etc.)")
-                st.caption("• Marketing disclaimers and legal notices")
-                st.caption("• Unsubscribe links and tracking URLs")  
-                st.caption("• Repetitive separators and boilerplate")
-                st.caption("• JPMorgan copyright and compliance text")
-                st.success("**Result**: 20-40% token savings, cleaner extraction")
-            
-            st.info("**Context Caching**: Instructions cached to avoid repetition (saves ~2K tokens per request)")
-        
         input_method = st.radio("Input method:", ["Text", "File"])
         
         newsletter_text = ""
@@ -1682,25 +1730,6 @@ with st.sidebar:
             uploaded_file = st.file_uploader("Upload file:", type=['txt'])
             if uploaded_file:
                 try:
-                    # Check file size before processing
-                    file_size = len(uploaded_file.getvalue())
-                    file_size_mb = file_size / (1024 * 1024)
-                    
-                    # Show file size info
-                    if file_size_mb > 10:
-                        st.error(f"🚨 **Very Large File** ({file_size_mb:.1f}MB)")
-                        st.warning("⚠️ Processing may take 45+ seconds and consume significant API quota.")
-                        st.info("💡 **Tip**: Consider splitting files >10MB for better performance.")
-                    elif file_size_mb > 5:
-                        st.warning(f"⚠️ **Large File** ({file_size_mb:.1f}MB)")
-                        st.info("Expected processing time: 15-45 seconds")
-                    elif file_size_mb > 1:
-                        st.info(f"📄 **Medium File** ({file_size_mb:.1f}MB)")
-                        st.success("Expected processing time: 3-15 seconds")
-                    else:
-                        st.success(f"📄 **Small File** ({file_size_mb:.1f}MB)")
-                        st.success("Expected processing time: 1-3 seconds")
-                    
                     success, content, error_msg, encoding_used = load_file_content_enhanced(uploaded_file)
                     
                     if success:
@@ -1718,45 +1747,25 @@ with st.sidebar:
         # Extract button
         if st.button("Start Extraction", use_container_width=True):
             if not newsletter_text.strip():
-                console_log("Attempted extraction with empty content", "ERROR")
+                log_user_action("EXTRACTION_ERROR", "Attempted extraction with empty content")
                 st.error("Please provide content")
             elif not model:
-                console_log("Attempted extraction without API key", "ERROR")
+                log_user_action("EXTRACTION_ERROR", "Attempted extraction without API key")
                 st.error("Please provide API key")
             else:
-                # Get preprocessing setting from session state
-                enable_preprocessing = st.session_state.get('enable_preprocessing', True)
                 # Start background processing
-                console_log(f"Starting extraction with {len(newsletter_text)} characters using model {model.model_id}")
-                
-                # Calculate processing estimates for large files
-                text_mb = len(newsletter_text) / (1024 * 1024)
-                if text_mb <= 1:
-                    estimated_chunks = max(1, len(newsletter_text) // 500000)
-                    estimated_time = estimated_chunks * 0.5
-                elif text_mb <= 5:
-                    estimated_chunks = max(1, len(newsletter_text) // 1000000)
-                    estimated_time = estimated_chunks * 0.8
-                else:
-                    estimated_chunks = max(1, len(newsletter_text) // 2000000)
-                    estimated_time = estimated_chunks * 1.2
-                
-                # Show file size warning for large files
-                if text_mb > 5:
-                    st.warning(f"⚠️ **Large file detected** ({text_mb:.1f}MB). Processing may take {estimated_time:.0f}-{estimated_time*1.5:.0f} seconds.")
-                elif text_mb > 2:
-                    st.info(f"📄 **Medium file** ({text_mb:.1f}MB). Estimated processing time: {estimated_time:.0f}-{estimated_time*1.2:.0f} seconds.")
+                log_user_action("EXTRACTION_START", f"Starting extraction with {len(newsletter_text)} characters using model {model.model_id}")
                 
                 st.session_state.background_processing = {
                     'is_running': True,
                     'progress': 0,
-                    'status_message': f'Starting extraction... ({text_mb:.1f}MB → {estimated_chunks} chunks → ~{estimated_time:.0f}s)',
+                    'status_message': 'Starting extraction...',
                     'results': {'people': [], 'performance': []}
                 }
                 
                 with st.spinner("Extracting data..."):
                     try:
-                        people, performance = process_extraction_with_rate_limiting(newsletter_text, model, enable_preprocessing)
+                        people, performance = process_extraction_with_rate_limiting(newsletter_text, model)
                         
                         st.session_state.background_processing = {
                             'is_running': False,
@@ -1765,11 +1774,11 @@ with st.sidebar:
                             'results': {'people': people, 'performance': performance}
                         }
                         
-                        console_log(f"Extraction complete: {len(people)} people, {len(performance)} metrics found")
+                        log_user_action("EXTRACTION_SUCCESS", f"Extraction complete: {len(people)} people, {len(performance)} metrics found")
                         st.success(f"Extraction complete! Found {len(people)} people and {len(performance)} metrics")
                         
                     except Exception as e:
-                        console_log(f"Extraction failed: {e}", "ERROR")
+                        log_user_action("EXTRACTION_ERROR", f"Extraction failed: {e}")
                         st.error(f"Extraction failed: {e}")
                         st.session_state.background_processing['is_running'] = False
 
@@ -1777,7 +1786,7 @@ with st.sidebar:
         st.error("Please install: pip install google-generativeai")
     
     # --- DUPLICATE DETECTION TESTING SECTION ---
-    if st.checkbox("🔍 Test Duplicate Detection & Debug Extraction", help="Debug and test duplicate detection logic plus extraction debugging"):
+    if st.checkbox("🔍 Test Duplicate Detection", help="Debug and test duplicate detection logic"):
         st.markdown("---")
         st.subheader("🧪 Duplicate Detection Testing")
         
@@ -1823,119 +1832,6 @@ with st.sidebar:
                     st.success(f"✅ NO DUPLICATE: Safe to add")
                 
                 st.info(f"Generated key: `{test_key}`")
-        
-        # --- EXTRACTION DEBUGGING SECTION ---
-        st.markdown("---")
-        st.subheader("🔬 Extraction Debugging")
-        
-        if api_key and model:
-            debug_text = st.text_area("Test Extraction on Small Sample:", 
-                value="Harrison Balistreri from Hitchwood is launching Inevitable Capital Management with a long/short strategy.", 
-                height=100)
-            
-            if st.button("🧪 Test Small Extraction"):
-                if debug_text.strip():
-                    console_log("Starting debug extraction test")
-                    st.info("🔍 Check your console/terminal for detailed debug logs!")
-                    
-                    with st.spinner("Testing extraction..."):
-                        try:
-                            people, performance = extract_data_from_text(debug_text, model)
-                            
-                            st.success(f"✅ Extraction test complete!")
-                            st.write(f"**Results**: {len(people)} people, {len(performance)} metrics found")
-                            
-                            if people:
-                                st.write("**People found:**")
-                                for i, person in enumerate(people):
-                                    with st.expander(f"Person {i+1}: {safe_get(person, 'name')}"):
-                                        st.json(person)
-                            
-                            if performance:
-                                st.write("**Performance found:**")
-                                for i, perf in enumerate(performance):
-                                    with st.expander(f"Metric {i+1}: {safe_get(perf, 'fund_name')}"):
-                                        st.json(perf)
-                            
-                            if not people and not performance:
-                                st.warning("⚠️ No data extracted. Check console logs for debugging details.")
-                                
-                        except Exception as e:
-                            st.error(f"❌ Extraction test failed: {e}")
-                            console_log(f"Debug extraction failed: {e}", "ERROR")
-                else:
-                    st.error("Please enter some test text")
-        else:
-            st.info("💡 Enter your Gemini API key above to enable extraction debugging")
-        
-        # Show extraction tips
-        with st.expander("📋 Extraction Performance Guide"):
-            st.markdown("""
-            **📊 File Size Processing Estimates:**
-            
-            | File Size | Chunk Size | Est. Time | Performance |
-            |-----------|------------|-----------|-------------|
-            | < 1MB | 500K chars | 1-3 sec | ⚡ Fast |
-            | 1-5MB | 1M chars | 3-15 sec | 🚀 Good |
-            | 5-10MB | 2M chars | 15-45 sec | 💪 Optimized |
-            | > 10MB | 2M chars | 45+ sec | ⏳ Patience |
-            
-            **🔧 NEW: Smart Optimizations:**
-            - ✅ **Content Preprocessing**: Removes 20-40% of marketing/legal noise
-            - ✅ **Context Caching**: Saves ~2K tokens per request by caching instructions  
-            - ✅ **Smart chunking**: Larger chunks for bigger files (up to 2MB per chunk)
-            - ✅ **Dynamic rate limiting**: Adjusts delays based on token usage
-            - ✅ **Progress tracking**: Real-time ETA and chunk status
-            - ✅ **Memory efficient**: Processes in streaming fashion
-            
-            **💰 Token Savings Examples:**
-            - **5MB JP Morgan newsletter**: 40% reduction from preprocessing
-            - **10MB quarterly report**: 25% reduction + faster processing
-            - **Context caching**: 2K tokens saved per chunk (15-30% total savings)
-            
-            **🧹 What Preprocessing Removes:**
-            ```
-            From: JP Morgan Capital Advisory <email@jpmorgan.com>     ← REMOVED
-            Sent: Friday, June 27, 2025 4:56 PM                     ← REMOVED  
-            Subject: Hedge Fund News                                 ← REMOVED
-            
-            Harrison Balistreri launches Inevitable Capital...       ← KEPT
-            Engineers Gate up 12% this year...                       ← KEPT
-            
-            Unsubscribe | Privacy Policy | Cookies                   ← REMOVED
-            © 2025 JPMorgan Chase & Co. All rights reserved         ← REMOVED
-            This message is confidential and subject to terms...     ← REMOVED
-            ```
-            
-            **⚠️ Large File Considerations:**
-            - **5-10MB files**: Use dedicated processing time, expect 15-45 seconds
-            - **Memory usage**: ~2-3x file size in RAM during processing
-            - **Rate limits**: Automatically managed, but very large files may hit daily quotas
-            - **Quality**: Preprocessing improves extraction quality by removing noise
-            
-            **🚨 If extraction fails on large files:**
-            
-            1. **Check console logs** for detailed error information
-            2. **Try enabling preprocessing** if disabled (removes noise)
-            3. **Try splitting** very large files (>10MB) into smaller parts
-            4. **Verify API quota** - large files consume significant tokens
-            5. **Memory issues**: Restart app if processing multiple large files
-            
-            **✅ What extracts well from large files:**
-            - News aggregations and newsletters (excellent with preprocessing)
-            - Annual reports and presentations  
-            - Large email archives (preprocessing removes headers)
-            - Conference transcripts
-            - Multiple press releases combined
-            
-            **⏱️ Performance Tips:**
-            - **Enable preprocessing** for newsletters and emails (major token savings)
-            - Process during off-peak hours for better API response
-            - Close other heavy applications to free up memory
-            - Use wired internet connection for stability
-            - Context caching automatically optimizes repeated extractions
-            """)
-    
     
     # Show extraction results for review
     if st.session_state.background_processing.get('results', {}).get('people') or st.session_state.background_processing.get('results', {}).get('performance'):
@@ -2034,7 +1930,7 @@ with st.sidebar:
                         blocked_count += 1
                         blocked_details.append(f"• {name} at {company_name} (Key: {person_key})")
                         st.write(f"  🚫 **BLOCKED**: Duplicate found - {safe_get(existing_person, 'name')} at {safe_get(existing_person, 'current_company_name')}")
-                        console_log(f"BLOCKED DUPLICATE: {name} at {company_name} - already exists", "WARNING")
+                        logger.warning(f"BLOCKED DUPLICATE: {name} at {company_name} - already exists")
                         continue
                     
                     st.write(f"  ✅ **CREATING**: New person")
@@ -2042,50 +1938,29 @@ with st.sidebar:
                     # Only create if no duplicate exists
                     new_person_id = str(uuid.uuid4())
                     
-                    # Extract contact info from the extraction data
-                    extracted_email = safe_get(person_data, 'email', '').strip()
-                    extracted_phone = safe_get(person_data, 'phone', '').strip()
-                    extracted_linkedin = safe_get(person_data, 'linkedin', '').strip()
-                    source_snippet = safe_get(person_data, 'source_snippet', '').strip()
-                    
                     new_person = {
                         "id": new_person_id,
                         "name": name,
                         "current_title": safe_get(person_data, 'current_title', 'Unknown'),
                         "current_company_name": company_name,
                         "location": safe_get(person_data, 'location', 'Unknown'),
-                        "email": extracted_email if extracted_email and extracted_email != 'Unknown' else "",
-                        "phone": extracted_phone if extracted_phone and extracted_phone != 'Unknown' else "",
-                        "linkedin": extracted_linkedin if extracted_linkedin and extracted_linkedin != 'Unknown' else "",
+                        "email": "",
+                        "phone": "",
                         "education": "",
                         "expertise": safe_get(person_data, 'expertise', 'Unknown'),
                         "aum_managed": "",
                         "strategy": "",
                         "created_date": datetime.now().isoformat(),
                         "last_updated": datetime.now().isoformat(),
-                        "context_mentions": []
+                        "context_mentions": [{
+                            'id': str(uuid.uuid4()),
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'mention',
+                            'content': f"Discovered via data extraction",
+                            'source': 'Data Extraction',
+                            'date_added': datetime.now().isoformat()
+                        }]
                     }
-                    
-                    # Add source snippet as context if available
-                    if source_snippet and source_snippet != 'Unknown':
-                        new_person["context_mentions"].append({
-                            'id': str(uuid.uuid4()),
-                            'timestamp': datetime.now().isoformat(),
-                            'type': 'mention',
-                            'content': f"Discovered via data extraction",
-                            'source': 'Data Extraction',
-                            'source_snippet': source_snippet,
-                            'date_added': datetime.now().isoformat()
-                        })
-                    else:
-                        new_person["context_mentions"].append({
-                            'id': str(uuid.uuid4()),
-                            'timestamp': datetime.now().isoformat(),
-                            'type': 'mention',
-                            'content': f"Discovered via data extraction",
-                            'source': 'Data Extraction',
-                            'date_added': datetime.now().isoformat()
-                        })
                     
                     # FINAL SAFETY CHECK before adding to database
                     final_check = find_existing_person_strict(new_person['name'], new_person['current_company_name'])
@@ -2178,10 +2053,10 @@ with col2:
     if st.button("Search", use_container_width=True) or search_query != st.session_state.global_search:
         st.session_state.global_search = search_query
         if search_query and len(search_query.strip()) >= 2:
-            console_log(f"User searched for: '{search_query}'")
+            log_user_action("SEARCH", f"User searched for: '{search_query}'")
             st.rerun()
         elif search_query != st.session_state.global_search:
-            console_log("User cleared search")
+            log_user_action("SEARCH_CLEAR", "User cleared search")
             st.rerun()
 
 # Handle global search results
@@ -2499,9 +2374,6 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
         phone = safe_get(person, 'phone')
         if phone != 'Unknown' and phone:
             st.markdown(f"**Phone:** {phone}")
-        linkedin = safe_get(person, 'linkedin')
-        if linkedin != 'Unknown' and linkedin:
-            st.markdown(f"**LinkedIn:** [{linkedin}]({linkedin})")
     
     with col2:
         education = safe_get(person, 'education')
@@ -2615,12 +2487,6 @@ elif st.session_state.current_view == 'person_details' and st.session_state.sele
                 st.markdown(f"**{mention.get('type', 'mention').title()}**")
                 st.write(mention.get('content', ''))
                 st.caption(f"Source: {mention.get('source', 'Unknown')} | {mention.get('timestamp', 'Unknown date')}")
-                
-                # Show source snippet if available
-                source_snippet = mention.get('source_snippet', '')
-                if source_snippet and source_snippet.strip():
-                    with st.expander("📄 View Source Snippet"):
-                        st.text_area("Original text:", value=source_snippet, height=100, disabled=True)
     else:
         st.info("No context or news mentions recorded.")
         
@@ -2773,7 +2639,6 @@ if st.session_state.show_add_person_modal:
         with col2:
             email = st.text_input("Email", placeholder="john.smith@company.com")
             phone = st.text_input("Phone", placeholder="+852-1234-5678")
-            linkedin = st.text_input("LinkedIn", placeholder="https://linkedin.com/in/johnsmith")
             education = st.text_input("Education", placeholder="Harvard, MIT")
             expertise = st.text_input("Expertise", placeholder="Equity Research")
         
@@ -2817,7 +2682,6 @@ if st.session_state.show_add_person_modal:
                         "location": location or "Unknown",
                         "email": email or "",
                         "phone": phone or "",
-                        "linkedin": linkedin or "",
                         "education": education or "",
                         "expertise": expertise or "",
                         "aum_managed": aum_managed or "",
@@ -2945,13 +2809,55 @@ with col2:
         st.info("🌏 No Asia-based profiles found yet")
         st.caption("Asia-based profiles will appear here automatically when detected")
 
-# --- SIMPLE DEBUGGING SECTION ---
+# --- LOG FILE ACCESS FUNCTIONS ---
+def get_recent_logs(log_type="main", lines=50):
+    """Get recent log entries for monitoring"""
+    try:
+        if log_type == "main":
+            log_file = LOGS_DIR / 'hedge_fund_app.log'
+        elif log_type == "extraction":
+            log_file = LOGS_DIR / 'extraction.log'
+        elif log_type == "database":
+            log_file = LOGS_DIR / 'database.log'
+        elif log_type == "api":
+            log_file = LOGS_DIR / 'api.log'
+        elif log_type == "user_actions":
+            log_file = LOGS_DIR / 'user_actions.log'
+        else:
+            return []
+        
+        if not log_file.exists():
+            return []
+        
+        with open(log_file, 'r', encoding='utf-8') as f:
+            all_lines = f.readlines()
+            return all_lines[-lines:] if len(all_lines) > lines else all_lines
+    
+    except Exception as e:
+        logger.error(f"Error reading log file {log_type}: {e}")
+        return []
+
+def log_session_summary():
+    """Log session summary statistics"""
+    try:
+        people_count = len(st.session_state.people)
+        firms_count = len(st.session_state.firms)
+        asia_people = len(get_asia_people())
+        asia_firms = len(get_asia_firms())
+        
+        log_user_action("SESSION_SUMMARY", 
+            f"Session {SESSION_ID} stats: {people_count} people ({asia_people} Asia), {firms_count} firms ({asia_firms} Asia)")
+    
+    except Exception as e:
+        logger.error(f"Error logging session summary: {e}")
+
+# --- COMPREHENSIVE DEBUGGING SECTION ---
 if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed database information for debugging"):
     st.markdown("---")
     st.subheader("🔧 Database Debug Information")
     
     # Log debug mode access
-    console_log("User entered debug mode")
+    log_user_action("DEBUG_MODE", "User entered debug mode")
     
     # Show all current person keys
     st.markdown("**Current People in Database:**")
@@ -2982,7 +2888,7 @@ if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed da
     with col3:
         if st.button("🔍 Check Duplicate", key="debug_check"):
             if test_name and test_company:
-                console_log(f"Testing duplicate for: '{test_name}' at '{test_company}'")
+                log_user_action("DEBUG_DUPLICATE_TEST", f"Testing duplicate for: '{test_name}' at '{test_company}'")
                 
                 existing = find_existing_person_strict(test_name, test_company)
                 test_key = create_person_key(test_name, test_company)
@@ -3009,20 +2915,25 @@ if st.checkbox("🔧 Debug Mode - Show Database Details", help="Show detailed da
     for name, company in examples:
         key = create_person_key(name, company)
         st.write(f"• `{name}` + `{company}` → `{key}`")
-
-# Session summary
-def log_session_summary():
-    """Log session summary statistics"""
-    try:
-        people_count = len(st.session_state.people)
-        firms_count = len(st.session_state.firms)
-        asia_people = len(get_asia_people())
-        asia_firms = len(get_asia_firms())
-        
-        console_log(f"Session {SESSION_ID} stats: {people_count} people ({asia_people} Asia), {firms_count} firms ({asia_firms} Asia)")
     
-    except Exception as e:
-        console_log(f"Error logging session summary: {e}", "ERROR")
+    # Show recent logs
+    st.markdown("---")
+    st.subheader("📋 Recent Log Entries")
+    
+    log_type = st.selectbox("Select Log Type:", 
+        ["user_actions", "extraction", "database", "api", "main"])
+    
+    if st.button("Refresh Logs"):
+        log_user_action("DEBUG_LOG_VIEW", f"User viewed {log_type} logs")
+    
+    recent_logs = get_recent_logs(log_type, 20)
+    if recent_logs:
+        st.text_area("Recent Log Entries:", 
+            value="".join(recent_logs), 
+            height=300,
+            disabled=True)
+    else:
+        st.info(f"No {log_type} logs found")
 
 # Log session summary before exit (this runs every time)
 log_session_summary()
