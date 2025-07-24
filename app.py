@@ -1567,50 +1567,51 @@ with st.sidebar:
                 st.sidebar.success(f"✅ CSV loaded: {len(df)} rows")
             else:
                 st.sidebar.error("❌ CSV not loaded")
-        if drive_manager.service:
-            st.sidebar.markdown("**🔬 DETAILED DIAGNOSIS:**")
-    
-            try:
-                # Show exact service account being used
-                creds_info = st.secrets["google_service_account"]
-                service_email = creds_info['client_email']
-                st.sidebar.write("**Service Account Email:**")
-                st.sidebar.code(service_email)
-                
-                # Test if service account can access Drive at all
-                if st.sidebar.button("🧪 Test Drive Access"):
-                    try:
-                        # Test basic Drive API
-                        all_files = drive_manager.service.files().list(pageSize=10).execute()
-                        files = all_files.get('files', [])
-                        st.sidebar.write(f"**Total files service account can see:** {len(files)}")
-                        
-                        if files:
-                            st.sidebar.success("✅ Service account can access Drive")
-                            for file in files[:3]:
-                                st.sidebar.write(f"- {file['name']}")
-                        else:
-                            st.sidebar.error("❌ Service account can't see ANY files")
-                        
-                        # Search for your specific folder
-                        folder_search = drive_manager.service.files().list(
-                            q="name='HedgeFund_Data' and mimeType='application/vnd.google-apps.folder'"
-                        ).execute()
-                        
-                        folders = folder_search.get('files', [])
-                        st.sidebar.write(f"**HedgeFund_Data folders found:** {len(folders)}")
-                        
-                        if folders:
-                            for folder in folders:
-                                st.sidebar.write(f"Folder ID: {folder['id']}")
-                        else:
-                            st.sidebar.error("❌ Can't find HedgeFund_Data folder")
-                        
-                    except Exception as e:
-                        st.sidebar.error(f"❌ Drive API Error: {str(e)}")
-                        
-            except Exception as e:
-                st.sidebar.error(f"❌ Debug Error: {str(e)}")
+    # Add this in your sidebar after the "🔍 DEBUG INFO:" section
+    if drive_manager.service:
+        st.sidebar.markdown("**🔬 DETAILED DIAGNOSIS:**")
+        
+        try:
+            # Show exact service account being used
+            creds_info = st.secrets["google_service_account"]
+            service_email = creds_info['client_email']
+            st.sidebar.write("**Service Account Email:**")
+            st.sidebar.code(service_email)
+            
+            # Test if service account can access Drive at all
+            if st.sidebar.button("🧪 Test Drive Access"):
+                try:
+                    # Test basic Drive API
+                    all_files = drive_manager.service.files().list(pageSize=10).execute()
+                    files = all_files.get('files', [])
+                    st.sidebar.write(f"**Total files service account can see:** {len(files)}")
+                    
+                    if files:
+                        st.sidebar.success("✅ Service account can access Drive")
+                        for file in files[:3]:
+                            st.sidebar.write(f"- {file['name']}")
+                    else:
+                        st.sidebar.error("❌ Service account can't see ANY files")
+                    
+                    # Search for your specific folder
+                    folder_search = drive_manager.service.files().list(
+                        q="name='HedgeFund_Data' and mimeType='application/vnd.google-apps.folder'"
+                    ).execute()
+                    
+                    folders = folder_search.get('files', [])
+                    st.sidebar.write(f"**HedgeFund_Data folders found:** {len(folders)}")
+                    
+                    if folders:
+                        for folder in folders:
+                            st.sidebar.write(f"Folder ID: {folder['id']}")
+                    else:
+                        st.sidebar.error("❌ Can't find HedgeFund_Data folder")
+                    
+                except Exception as e:
+                    st.sidebar.error(f"❌ Drive API Error: {str(e)}")
+                    
+        except Exception as e:
+            st.sidebar.error(f"❌ Debug Error: {str(e)}")
 
         # Show recent files
         files = drive_manager.list_files()
