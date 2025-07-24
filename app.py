@@ -1553,6 +1553,20 @@ with st.sidebar:
     # Google Drive Status
     if drive_manager.service:
         st.success("✅ Google Drive Connected")
+        if drive_manager.service:
+            st.sidebar.markdown("**🔍 DEBUG INFO:**")
+            files = drive_manager.list_files()
+            st.sidebar.write(f"Files found: {len(files)}")
+            
+            for file in files:
+                st.sidebar.write(f"📄 {file['name']}")
+            
+            # Test loading
+            df = drive_manager.download_csv("hedge_fund_data_latest.csv")
+            if df is not None:
+                st.sidebar.success(f"✅ CSV loaded: {len(df)} rows")
+            else:
+                st.sidebar.error("❌ CSV not loaded")
 
         # Show recent files
         files = drive_manager.list_files()
