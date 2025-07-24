@@ -554,53 +554,122 @@ def debug_person_keys():
     return keys
 
 # --- Data Persistence with Google Drive ---
+def debug_dataframe_structure(df):
+    """Debug function to understand CSV structure"""
+    try:
+        log_essential(f"DataFrame shape: {df.shape}")
+        log_essential(f"DataFrame columns: {list(df.columns)}")
+        
+        # Show first few rows
+        log_essential("First 3 rows:")
+        for i, row in df.head(3).iterrows():
+            log_essential(f"Row {i}: {dict(row)}")
+        
+        # Check Type column values
+        if 'Type' in df.columns:
+            type_counts = df['Type'].value_counts()
+            log_essential(f"Type counts: {dict(type_counts)}")
+        
+        # Check for any null/empty values in key columns
+        key_columns = ['Type', 'Name', 'Company', 'Title']
+        for col in key_columns:
+            if col in df.columns:
+                null_count = df[col].isnull().sum()
+                empty_count = (df[col] == '').sum()
+                log_essential(f"Column '{col}': {null_count} nulls, {empty_count} empty strings")
+        
+        return True
+        
+    except Exception as e:
+        log_essential(f"Error debugging dataframe: {e}")
+        return False
+
+# Updated dataframe_to_people_and_firms function with better error handling
 def dataframe_to_people_and_firms(df):
-    """Convert DataFrame back to people and firms lists"""
-    people = []
-    firms = []
-
-    for _, row in df.iterrows():
-        if row['Type'] == 'Person':
-            person = {
-                "id": str(uuid.uuid4()),
-                "name": safe_get(row, 'Name'),
-                "current_title": safe_get(row, 'Title'),
-                "current_company_name": safe_get(row, 'Company'),
-                "location": safe_get(row, 'Location'),
-                "email": safe_get(row, 'Email') if pd.notna(row.get('Email')) else "",
-                "phone": "",
-                "education": "",
-                "expertise": safe_get(row, 'Expertise'),
-                "aum_managed": safe_get(row, 'AUM'),
-                "strategy": "",
-                "created_date": datetime.now().isoformat(),
-                "last_updated": datetime.now().isoformat(),
-                "context_mentions": [],
-                "is_asia_based": row.get('Asia_Based', 'No') == 'Yes' or row.get('Region') == 'Asia'
-            }
-            people.append(person)
-
-        elif row['Type'] == 'Firm':
-            firm = {
-                "id": str(uuid.uuid4()),
-                "name": safe_get(row, 'Name'),
-                "firm_type": safe_get(row, 'Expertise'),
-                "location": safe_get(row, 'Location'),
-                "headquarters": safe_get(row, 'Location'),
-                "aum": safe_get(row, 'AUM'),
-                "founded": None,
-                "strategy": safe_get(row, 'Title'),
-                "website": safe_get(row, 'Email') if pd.notna(row.get('Email')) else "",
-                "description": "",
-                "performance_metrics": [],
-                "created_date": datetime.now().isoformat(),
-                "last_updated": datetime.now().isoformat(),
-                "context_mentions": [],
-                "is_asia_based": row.get('Asia_Based', 'No') == 'Yes' or row.get('Region') == 'Asia'
-            }
-            firms.append(firm)
-
-    return people, firms
+    """Convert DataFrame back to people and firms lists with enhanced debugging"""
+    try:
+        if df is None or df.empty:
+            log_essential("dataframe_to_people_and_firms: DataFrame is None or empty")
+            return [], []
+        
+        # Debug the dataframe structure
+        debug_dataframe_structure(df)
+        
+        people = []
+        firms = []
+        
+        log_essential(f"Processing {len(df)} rows from CSV")
+        
+        for idx, row in df.iterrows():
+            try:
+                # Get type with fallback
+                row_type = str(row.get('Type', '')).strip()
+                
+                if not row_type:
+                    log_essential(f"Row {idx}: No type specified, skipping")
+                    continue
+                
+                # Get basic info with safe handling
+                name = str(row.get('Name', '')).strip()
+                company = str(row.get('Company', '')).strip()
+                
+                if not name or name.lower() in ['nan', 'none', '']:
+                    log_essential(f"Row {idx}: Invalid name '{name}', skipping")
+                    continue
+                
+                if row_type.lower() == 'person':
+                    person = {
+                        "id": str(uuid.uuid4()),
+                        "name": name,
+                        "current_title": str(row.get('Title', 'Unknown')).strip(),
+                        "current_company_name": company if company else 'Unknown',
+                        "location": str(row.get('Location', 'Unknown')).strip(),
+                        "email": str(row.get('Email', '')).strip() if pd.notna(row.get('Email')) else "",
+                        "phone": "",
+                        "education": "",
+                        "expertise": str(row.get('Expertise', 'Unknown')).strip(),
+                        "aum_managed": str(row.get('AUM', '')).strip(),
+                        "strategy": "",
+                        "created_date": datetime.now().isoformat(),
+                        "last_updated": datetime.now().isoformat(),
+                        "context_mentions": [],
+                        "is_asia_based": str(row.get('Asia_Based', 'No')).strip().lower() == 'yes' or str(row.get('Region', '')).strip().lower() == 'asia'
+                    }
+                    people.append(person)
+                    
+                elif row_type.lower() == 'firm':
+                    firm = {
+                        "id": str(uuid.uuid4()),
+                        "name": name,
+                        "firm_type": str(row.get('Expertise', 'Unknown')).strip(),
+                        "location": str(row.get('Location', 'Unknown')).strip(),
+                        "headquarters": str(row.get('Location', 'Unknown')).strip(),
+                        "aum": str(row.get('AUM', 'Unknown')).strip(),
+                        "founded": None,
+                        "strategy": str(row.get('Title', 'Unknown')).strip(),
+                        "website": str(row.get('Email', '')).strip() if pd.notna(row.get('Email')) else "",
+                        "description": "",
+                        "performance_metrics": [],
+                        "created_date": datetime.now().isoformat(),
+                        "last_updated": datetime.now().isoformat(),
+                        "context_mentions": [],
+                        "is_asia_based": str(row.get('Asia_Based', 'No')).strip().lower() == 'yes' or str(row.get('Region', '')).strip().lower() == 'asia'
+                    }
+                    firms.append(firm)
+                
+                else:
+                    log_essential(f"Row {idx}: Unknown type '{row_type}', skipping")
+                    
+            except Exception as row_error:
+                log_essential(f"Error processing row {idx}: {row_error}")
+                continue
+        
+        log_essential(f"Conversion complete: {len(people)} people, {len(firms)} firms")
+        return people, firms
+        
+    except Exception as e:
+        log_essential(f"Error in dataframe_to_people_and_firms: {e}")
+        return [], []
 
 def people_and_firms_to_dataframe(people, firms):
     """Convert people and firms lists to DataFrame for CSV storage"""
